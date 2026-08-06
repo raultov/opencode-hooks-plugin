@@ -1,0 +1,73 @@
+{
+  "name": "@raultov/opencode-hooks-plugin",
+  "version": "0.1.0",
+  "description": "Bridges Claude Code SessionStart hooks to opencode, which has no hooks of its own",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "claude-code",
+    "hooks",
+    "sessionstart"
+  ],
+  "license": "MIT",
+  "author": "Raul Tovar (https://github.com/raultov)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raultov/opencode-hooks-plugin.git"
+  },
+  "homepage": "https://github.com/raultov/opencode-hooks-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/raultov/opencode-hooks-plugin/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc",
+    "build": "tsup",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --write",
+    "format": "biome format --write",
+    "check": "biome check --write",
+    "prepublishOnly": "bun run typecheck && bun run lint && bun test && bun run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
+    "@opencode-ai/plugin": "^1.4.0",
+    "@opencode-ai/sdk": "^1.0.0",
+    "@types/bun": "latest",
+    "tsup": "^8.5.1",
+    "typescript": "^5.5.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.4.0",
+    "@opencode-ai/sdk": "*"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    },
+    "@opencode-ai/sdk": {
+      "optional": true
+    }
+  }
+}

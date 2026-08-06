@@ -1,0 +1,41 @@
+.knot/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+.bun/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Coverage and logs
+coverage/
+.nyc_output/
+*.lcov
+*.log
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+.npmrc
+.yarnrc
+.yarnrc.yml
+
+# Certs / keys
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Local opencode config
+opencode.json
+
+# Packaged tarballs
+*.tgz
