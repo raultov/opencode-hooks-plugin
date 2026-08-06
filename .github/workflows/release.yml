@@ -5,7 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-  workflow_dispatch:
 
 permissions:
   contents: write   # required to create gh release
@@ -15,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -25,6 +26,19 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Read package.json version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="${{ steps.pkg.outputs.version }}"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
       - run: bun install
       - run: bun run build
       - run: bun test
@@ -32,6 +46,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: "@raultov/opencode-hooks-plugin@${{ steps.pkg.outputs.version }}"
+          body: |
+            Release `@raultov/opencode-hooks-plugin@${{ steps.pkg.outputs.version }}`.
+
+            See [CHANGELOG.md](./blob/main/CHANGELOG.md) and audit log on npmjs.
           generate_release_notes: true
 
       - run: npm publish --no-git-checks

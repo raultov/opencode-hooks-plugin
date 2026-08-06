@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-06
+
+### Changed
+
+- Bump version to 0.1.1 to publish first release.
+- CI: add GitHub Actions `ci` and `release` workflows (build, test, publish to npm, GitHub Release).
+- CI: make `release` workflow tag/name GitHub Release from `package.json` version.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added

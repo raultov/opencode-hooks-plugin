@@ -1,6 +1,6 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bridges Claude Code SessionStart hooks to opencode, which has no hooks of its own",
   "keywords": [
     "opencode",
