@@ -79,6 +79,21 @@ describe("resolveCommands", () => {
     ]);
   });
 
+  test("ignores an empty skip entry instead of skipping everything", () => {
+    expect(resolve([""])).toHaveLength(3);
+  });
+
+  test("ignores a whitespace-only skip entry instead of skipping everything", () => {
+    expect(resolve(["  "])).toHaveLength(3);
+  });
+
+  test("still applies the real needles alongside a blank one", () => {
+    expect(resolve(["", "memory.sh"]).map((entry) => entry.command)).toEqual([
+      `"${ROOT}/hooks/deps.sh" "${ROOT}"`,
+      "no-matcher-runs",
+    ]);
+  });
+
   test("returns nothing for an unknown event", () => {
     expect(resolveCommands(fixture, "Nope", ROOT, DEFAULT_MATCHERS, [])).toEqual([]);
   });

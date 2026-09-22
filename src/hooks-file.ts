@@ -65,13 +65,25 @@ export function hooksFileCandidates(root: string, explicit?: string): string[] {
 }
 
 /**
+ * Skip entries that are empty or whitespace only.
+ *
+ * `"anything".includes("")` is true, so a single blank entry — a trailing comma
+ * in the array, a config value that resolved to an empty string — would drop
+ * every command and bridge nothing. Callers warn about what this finds.
+ */
+export function blankSkipNeedles(skip: readonly string[]): string[] {
+  return skip.filter((needle) => needle.trim() === "");
+}
+
+/**
  * Selects the commands to run for an event and expands the plugin-root placeholder.
  *
  * @param file     parsed hooks file
  * @param event    Claude Code event name, e.g. `SessionStart`
  * @param root     value the plugin-root placeholder expands to
  * @param matchers matcher values to honour
- * @param skip     substrings; a command containing any of them is dropped
+ * @param skip     substrings; a command containing any of them is dropped.
+ *                 Blank entries are ignored rather than matching everything.
  */
 export function resolveCommands(
   file: HooksFile,
@@ -81,6 +93,7 @@ export function resolveCommands(
   skip: readonly string[],
 ): ResolvedCommand[] {
   const allowed = new Set(matchers);
+  const needles = skip.filter((needle) => needle.trim() !== "");
 
   return (file.hooks?.[event] ?? [])
     .filter((group) => allowed.has(group.matcher ?? ""))
@@ -88,7 +101,7 @@ export function resolveCommands(
     .flatMap((entry) => {
       if (entry.type !== "command" || typeof entry.command !== "string") return [];
       const command = entry.command.replaceAll(PLUGIN_ROOT_PLACEHOLDER, root);
-      if (skip.some((needle) => command.includes(needle))) return [];
+      if (needles.some((needle) => command.includes(needle))) return [];
       return [{ command, description: entry.description }];
     });
 }

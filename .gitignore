@@ -39,3 +39,5 @@ opencode.json
 
 # Packaged tarballs
 *.tgz
+
+hooks.json
