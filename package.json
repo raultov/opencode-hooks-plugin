@@ -1,6 +1,6 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Bridges Claude Code SessionStart hooks to opencode, which has no hooks of its own",
   "keywords": [
     "opencode",
@@ -26,6 +26,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./v1": {
+      "types": "./dist/v1.d.ts",
+      "default": "./dist/v1.js"
+    },
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "default": "./dist/v2.js"
     }
   },
   "engines": {
@@ -52,21 +60,26 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
-    "@opencode-ai/plugin": "^1.4.0",
+    "@opencode-ai/plugin": "^1.18.35",
     "@opencode-ai/sdk": "^1.0.0",
+    "@opencode/plugin": "^2.0.26",
     "@types/bun": "latest",
     "tsup": "^8.5.1",
     "typescript": "^5.5.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1.4.0",
-    "@opencode-ai/sdk": "*"
+    "@opencode-ai/plugin": ">=1.18.29",
+    "@opencode-ai/sdk": "*",
+    "@opencode/plugin": "^2.0.26"
   },
   "peerDependenciesMeta": {
     "@opencode-ai/plugin": {
       "optional": true
     },
     "@opencode-ai/sdk": {
+      "optional": true
+    },
+    "@opencode/plugin": {
       "optional": true
     }
   }

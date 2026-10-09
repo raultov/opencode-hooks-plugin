@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
+### Added
+
+- **opencode V2 support.** The package now serves both generations from one entrypoint: V2
+  reads the default export as a plugin definition and calls `setup`; V1 (1.18.29 and newer)
+  reads it as a `PluginModule` and calls `server`. Both share one bridging engine, so the
+  bridged behaviour cannot drift between generations.
+- On V2, `systemMessage` directives are injected through the stable session request hooks,
+  offered to every request kind that carries a system prompt (`context`, `compaction`,
+  `generate`, `title`) — the V1 equivalent of `experimental.chat.system.transform` firing on
+  every model call.
+- Package exports `./v1` and `./v2` exposing each generation's entrypoint in isolation.
+
+### Changed
+
+- The default export is now the dual entrypoint object. Wrappers that imported the default and
+  called it as a function should import the named `HooksPlugin` export instead (unchanged).
+- opencode V1 older than 1.18.29 cannot load object entrypoints: pin `0.2.0` there.
+
 ## [0.2.0] - 2026-09-22
 
 ### Added

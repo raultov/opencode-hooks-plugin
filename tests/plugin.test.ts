@@ -219,7 +219,9 @@ describe("HooksPlugin", () => {
 
   test("tells the model when a command exits non-zero", async () => {
     const { hooks, logs } = await load(root, {}, (command) => (command.includes("a.sh") ? { exitCode: 3 } : {}));
-    expect(await transform(hooks)).toEqual(["## SessionStart hooks\n⚠️ hook a.sh exited 3 — its context may be missing"]);
+    expect(await transform(hooks)).toEqual([
+      "## SessionStart hooks\n⚠️ hook a.sh exited 3 — its context may be missing",
+    ]);
     expect(logs.some((entry) => entry.level === "warn")).toBe(true);
   });
 
@@ -249,9 +251,7 @@ describe("HooksPlugin", () => {
   test("labels a quoted path containing spaces whole", async () => {
     const spaced = await hooksDir({
       hooks: {
-        SessionStart: [
-          { matcher: "startup", hooks: [{ type: "command", command: `"${PH}/my hooks/a.sh" --flag` }] },
-        ],
+        SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: `"${PH}/my hooks/a.sh" --flag` }] }],
       },
     });
     const { hooks, logs } = await load(spaced, {}, () => ({ exitCode: 1 }));
