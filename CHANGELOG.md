@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Commands get `CLAUDE_PROJECT_DIR`, set to the project directory as in Claude Code, so `.claude/settings.json`
+  hooks invoked as `"$CLAUDE_PROJECT_DIR"/.claude/hooks/…` resolve. The `env` option still overrides it.
+
+### Fixed
+
+- **`PostToolUse` never ran on opencode V2.** V2 names the tools `write`, `edit`, `shell` and `patch`, and the
+  file argument `path`; only V1's names (`bash`, `apply_patch`, `filePath`) were mapped. Both are now read, and
+  V2's `background` maps to `run_in_background`.
+- A patch no longer reports an `Edit` for a file it deletes, or for the source of a move: those paths no longer
+  exist, so formatting or linting hooks failed on them.
+- A `write` or `edit` call without a file path no longer runs its hooks with an empty `file_path`.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

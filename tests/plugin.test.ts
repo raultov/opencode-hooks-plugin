@@ -135,6 +135,25 @@ describe("HooksPlugin", () => {
     expect(executed[0]?.env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
   });
 
+  test("exports CLAUDE_PROJECT_DIR as the project directory, not the plugin root", async () => {
+    const pluginRoot = await mkdtemp(join(tmpdir(), "plugin-test-root-"));
+    const spies = harness();
+    // biome-ignore lint/suspicious/noExplicitAny: PluginInput is wider than the test needs.
+    const hooks = await HooksPlugin({ ...spies, directory: root } as any, {
+      root: pluginRoot,
+      hooksFile: join(root, "hooks", "hooks.json"),
+    });
+    await transform(hooks);
+    expect(spies.executed[0]?.env.CLAUDE_PROJECT_DIR).toBe(root);
+    expect(spies.executed[0]?.env.CLAUDE_PLUGIN_ROOT).toBe(pluginRoot);
+  });
+
+  test("lets the env option override CLAUDE_PROJECT_DIR", async () => {
+    const { hooks, executed } = await load(root, { env: { CLAUDE_PROJECT_DIR: "/custom" } });
+    await transform(hooks);
+    expect(executed[0]?.env.CLAUDE_PROJECT_DIR).toBe("/custom");
+  });
+
   test("merges extra env options", async () => {
     const { hooks, executed } = await load(root, { env: { EXTRA: "yes" } });
     await transform(hooks);
@@ -384,14 +403,27 @@ describe("HooksPlugin PostToolUse", () => {
     expect(executed).toHaveLength(0);
   });
 
-  test("runs once per file an apply_patch touches", async () => {
+  test("runs once per file an apply_patch leaves on disk", async () => {
     const { hooks, executed } = await load(root);
-    const patchText = "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Delete File: b.ts\n*** End Patch";
+    const patchText =
+      "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Delete File: b.ts\n*** Update File: c.ts\n*** Move to: d.ts\n*** End Patch";
     await afterTool(hooks, "apply_patch", { patchText });
     expect(executed.map((entry) => JSON.parse(entry.stdin ?? "").tool_input.file_path)).toEqual([
       join(root, "a.ts"),
-      join(root, "b.ts"),
+      join(root, "d.ts"),
     ]);
+  });
+
+  test("runs nothing for an edit with no file path", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "edit", { oldString: "x", newString: "y" });
+    expect(executed).toHaveLength(0);
+  });
+
+  test("exports CLAUDE_PROJECT_DIR as the project directory", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(executed[0]?.env.CLAUDE_PROJECT_DIR).toBe(root);
   });
 
   test("logs a failing command without throwing", async () => {

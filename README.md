@@ -34,6 +34,7 @@ package maps one onto the other.
 | `PostToolUse` + `matcher`          | `tool.execute.after`                            | `tool.hook("execute.after")`, completed calls    |
 | `type: "command"`                  | `sh -c` via opencode's shell                    | `sh -c` via `node:child_process`                 |
 | `${CLAUDE_PLUGIN_ROOT}`            | the `root` option                               | the `root` option                                |
+| `$CLAUDE_PROJECT_DIR`              | the project directory                           | the project directory                            |
 | stdout `{ "systemMessage": "…" }`  | `experimental.chat.system.transform`            | session `context`/`compaction`/`generate`/`title` hooks |
 | stdout `{ "continue": false }`     | remaining commands are skipped                  | remaining commands are skipped                   |
 
@@ -106,6 +107,8 @@ With options:
   Pin `@raultov/opencode-hooks-plugin@0.2.0` there.
 - **Loading from a local path** (development, or a checkout): point the config at the built `dist/`
   directory, which contains `index.js`. npm package names resolve `dist/index.js` on their own.
+  On V2, plugins are keyed by `id` and the first one loaded wins, so a local build is ignored while the
+  published package is also configured (in the global config, say): remove one of the two.
 - The `./v1` and `./v2` package exports expose each generation's entrypoint in isolation, mostly for
   tests and wrappers; the default export already serves both.
 
@@ -157,16 +160,18 @@ After each opencode tool call that changes files, the `PostToolUse` commands who
 Claude Code tool name run, in order. The matcher follows Claude Code: empty or `*` selects every tool,
 anything else is a regular expression over the whole name.
 
-| opencode      | Claude Code `tool_name` | `tool_input`                                                |
-| ------------- | ----------------------- | ----------------------------------------------------------- |
-| `write`       | `Write`                 | `file_path`, `content`                                      |
-| `edit`        | `Edit`                  | `file_path`, `old_string`, `new_string`, `replace_all`      |
-| `bash`        | `Bash`                  | `command`, `description`, `timeout`                         |
-| `apply_patch` | `Edit`, once per file   | `file_path` of each file the patch adds, updates, deletes or moves to |
+| opencode V1   | opencode V2 | Claude Code `tool_name` | `tool_input`                                                       |
+| ------------- | ----------- | ----------------------- | ------------------------------------------------------------------ |
+| `write`       | `write`     | `Write`                 | `file_path`, `content`                                             |
+| `edit`        | `edit`      | `Edit`                  | `file_path`, `old_string`, `new_string`, `replace_all`             |
+| `bash`        | `shell`     | `Bash`                  | `command`, `description`, `timeout`, `run_in_background`           |
+| `apply_patch` | `patch`     | `Edit`, once per file   | `file_path` of each file the patch adds, updates or moves to        |
 
-Every other tool runs no command: there is no Claude Code payload this plugin could vouch for. `file_path` is
-always absolute, resolved against the project directory. The payload also carries `session_id`, `cwd` and
-`hook_event_name`; it carries no `transcript_path` and no `tool_response`.
+Every other tool runs no command: there is no Claude Code payload this plugin could vouch for. A `write` or
+`edit` with no file path runs none either. A patch's deleted files, and the source of a move, are left out: they
+no longer exist, and Claude Code never reports an `Edit` on a missing file. `file_path` is always absolute,
+resolved against the project directory. The payload also carries `session_id`, `cwd` and `hook_event_name`; it
+carries no `transcript_path` and no `tool_response`.
 
 Each command is awaited, as Claude Code does, so a hook that inspects the working tree sees the tool's effect.
 It is bounded by `commandTimeoutMs`. A failure is logged only: it never reaches the system prompt and never

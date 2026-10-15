@@ -226,9 +226,11 @@ export async function createBridge(
     return idleBridge(inject);
   }
 
-  // CLAUDE_PLUGIN_ROOT is exported because hook scripts often read it too.
-  // CLAUDE_CODE_ENTRYPOINT is deliberately left alone: scripts use it to gate
-  // Claude-Code-only behaviour, and we are not Claude Code.
+  // CLAUDE_PLUGIN_ROOT and CLAUDE_PROJECT_DIR are exported because hook scripts
+  // often read them too: `.claude/settings.json` hooks are usually invoked as
+  // "$CLAUDE_PROJECT_DIR"/.claude/hooks/…. CLAUDE_CODE_ENTRYPOINT is
+  // deliberately left alone: scripts use it to gate Claude-Code-only
+  // behaviour, and we are not Claude Code.
   const env: Record<string, string> = {
     // process.env values are string | undefined, so the unset ones are dropped
     // rather than asserted away.
@@ -236,6 +238,7 @@ export async function createBridge(
       Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     CLAUDE_PLUGIN_ROOT: root,
+    CLAUDE_PROJECT_DIR: deps.directory,
     ...options.env,
   };
 

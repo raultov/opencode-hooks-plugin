@@ -116,6 +116,7 @@ describe("HooksPluginV2", () => {
     const { hooks, executed } = await load(root);
     await drive(hooks, "context");
     expect(executed[0]?.env.CLAUDE_PLUGIN_ROOT).toBe(root);
+    expect(executed[0]?.env.CLAUDE_PROJECT_DIR).toBe(root);
     expect(executed[0]?.env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
   });
 
@@ -203,6 +204,10 @@ describe("HooksPluginV2 PostToolUse", () => {
     },
   };
 
+  // The events below are the shapes opencode 2.0.26 hands `execute.after`,
+  // captured from a live session: V2 names the tools `write`, `edit`, `shell`
+  // and `patch`, and the file argument `path`.
+
   test("runs the matching command after a completed call", async () => {
     const root = await hooksDir(recorder);
     const { toolHooks, hooks, executed } = await load(root);
@@ -210,14 +215,56 @@ describe("HooksPluginV2 PostToolUse", () => {
     await toolHooks.get("execute.after")?.({
       tool: "write",
       sessionID: "ses_1",
-      input: { filePath: "/abs/a.ts", content: "" },
+      input: { path: "/abs/a.ts", content: "alpha" },
       status: "completed",
     });
     expect(executed.map((entry) => entry.command)).toEqual([`"${root}/record.sh"`]);
     expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
       hook_event_name: "PostToolUse",
       tool_name: "Write",
-      tool_input: { file_path: "/abs/a.ts", content: "" },
+      tool_input: { file_path: "/abs/a.ts", content: "alpha" },
+    });
+  });
+
+  test("maps a V2 edit", async () => {
+    const root = await hooksDir(recorder);
+    const { toolHooks, executed } = await load(root);
+    await toolHooks.get("execute.after")?.({
+      tool: "edit",
+      sessionID: "ses_1",
+      input: { path: "notes.txt", oldString: "alpha", newString: "beta" },
+      status: "completed",
+    });
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "notes.txt"), old_string: "alpha", new_string: "beta" },
+    });
+  });
+
+  test("maps the V2 shell tool to Bash", async () => {
+    const root = await hooksDir(recorder);
+    const { toolHooks, executed } = await load(root);
+    await toolHooks.get("execute.after")?.({
+      tool: "shell",
+      sessionID: "ses_1",
+      input: { command: "ls" },
+      status: "completed",
+    });
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({ tool_name: "Bash", tool_input: { command: "ls" } });
+  });
+
+  test("maps the V2 patch tool to one Edit per file", async () => {
+    const root = await hooksDir(recorder);
+    const { toolHooks, executed } = await load(root);
+    await toolHooks.get("execute.after")?.({
+      tool: "patch",
+      sessionID: "ses_1",
+      input: { patchText: "*** Begin Patch\n*** Add File: a.ts\n+x\n*** End Patch" },
+      status: "completed",
+    });
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
     });
   });
 
