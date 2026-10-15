@@ -3,16 +3,20 @@ import {
   blankSkipNeedles,
   DEFAULT_MATCHERS,
   hooksFileCandidates,
+  matchesTool,
   readHooksFile,
   resolveCommands,
+  resolveToolCommands,
 } from "./hooks-file.js";
+import { toClaudeToolCalls } from "./tools.js";
 
 /**
  * Shared engine behind the OpenCode V1 and V2 entrypoints.
  *
  * Both generations map Claude Code's `SessionStart` event the same way: run
  * the bridged commands once when the plugin loads, then surface their control
- * directives to the model. Only the mechanics differ per generation — how a
+ * directives to the model. `PostToolUse` commands run after each opencode tool
+ * call that has a Claude Code counterpart. Only the mechanics differ per generation — how a
  * command is executed and where diagnostics go — so those two concerns are
  * injected here and the bridging contract lives in one place.
  */
@@ -65,14 +69,18 @@ export type CommandResult = {
 };
 
 /**
- * Runs one shell line to completion.
+ * Runs one shell line to completion, with `stdin` as its standard input, or
+ * `/dev/null` when there is none.
  *
  * V1 plugs Bun's `$` in here, V2 plugs in `node:child_process`. Neither
  * generation kills an overrunning command: giving up on the wait is what
  * bounds the chain, and killing a bootstrap command half-way (an install, a
  * sync) could leave its work in a worse state than letting it finish.
  */
-export type Exec = (command: string, options: { cwd: string; env: Record<string, string> }) => Promise<CommandResult>;
+export type Exec = (
+  command: string,
+  options: { cwd: string; env: Record<string, string>; stdin?: string },
+) => Promise<CommandResult>;
 
 /** Diagnostic severity, shared by both generations' log transports. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -80,8 +88,11 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 /** Receives the plugin's diagnostics. Failures here are swallowed. */
 export type Log = (level: LogLevel, message: string, extra?: Record<string, unknown>) => Promise<void> | void;
 
-/** The only Claude Code event bridged today. See the README for why. */
+/** The Claude Code event run once, when the plugin loads. */
 export const EVENT = "SessionStart";
+
+/** The Claude Code event run after each tool call. See the README for the tool mapping. */
+export const TOOL_EVENT = "PostToolUse";
 
 export const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -125,23 +136,29 @@ export async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | 
 
 /** The bridged work a generation-specific entrypoint drives. */
 export type Bridge = {
-  /** False when nothing was bridged: no hooks file, or no matching commands. */
+  /** False when no `SessionStart` command was bridged. */
   readonly hasCommands: boolean;
+  /** False when no `PostToolUse` command was bridged. */
+  readonly hasToolCommands: boolean;
   /** Whether `systemMessage` directives should reach the system prompt. */
   readonly inject: boolean;
   /** Waits for the commands, at most `timeoutMs`. Settles at once on later calls. */
   awaitBootstrap(): Promise<void>;
   /** The system block to inject, or undefined when there is nothing to say. */
   systemBlock(): string | undefined;
+  /** Runs the `PostToolUse` commands matching one finished opencode tool call. */
+  afterTool(call: { tool: string; args: unknown; sessionID: string }): Promise<void>;
 };
 
 /** A bridge with nothing to run, for the early exits. */
 function idleBridge(inject: boolean): Bridge {
   return {
     hasCommands: false,
+    hasToolCommands: false,
     inject,
     awaitBootstrap: () => Promise.resolve(),
     systemBlock: () => undefined,
+    afterTool: () => Promise.resolve(),
   };
 }
 
@@ -203,10 +220,29 @@ export async function createBridge(
   }
 
   const commands = resolveCommands(found.file, EVENT, root, matchers, skip);
-  if (commands.length === 0) {
-    await log("debug", `no ${EVENT} commands to bridge`, { hooksFile: found.path });
+  const toolCommands = resolveToolCommands(found.file, TOOL_EVENT, root, skip);
+  if (commands.length === 0 && toolCommands.length === 0) {
+    await log("debug", `no ${EVENT} or ${TOOL_EVENT} commands to bridge`, { hooksFile: found.path });
     return idleBridge(inject);
   }
+
+  // CLAUDE_PLUGIN_ROOT is exported because hook scripts often read it too.
+  // CLAUDE_CODE_ENTRYPOINT is deliberately left alone: scripts use it to gate
+  // Claude-Code-only behaviour, and we are not Claude Code.
+  const env: Record<string, string> = {
+    // process.env values are string | undefined, so the unset ones are dropped
+    // rather than asserted away.
+    ...Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    ),
+    CLAUDE_PLUGIN_ROOT: root,
+    ...options.env,
+  };
+
+  // What Claude Code writes to a SessionStart hook's stdin, minus what opencode
+  // cannot supply: no session exists yet when the plugin loads, and there is no
+  // Claude Code transcript to point at.
+  const sessionStartInput = JSON.stringify({ hook_event_name: EVENT, source: "startup", cwd: deps.directory });
 
   /** `systemMessage` directives collected from the commands, in order. */
   const systemMessages: string[] = [];
@@ -222,25 +258,15 @@ export async function createBridge(
 
   // Commands run sequentially to preserve the order declared in the hooks file.
   const bootstrap = (async () => {
-    // CLAUDE_PLUGIN_ROOT is exported because hook scripts often read it too.
-    // CLAUDE_CODE_ENTRYPOINT is deliberately left alone: scripts use it to gate
-    // Claude-Code-only behaviour, and we are not Claude Code.
-    const env: Record<string, string> = {
-      // process.env values are string | undefined, so the unset ones are dropped
-      // rather than asserted away.
-      ...Object.fromEntries(
-        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-      ),
-      CLAUDE_PLUGIN_ROOT: root,
-      ...options.env,
-    };
-
     for (const { command, description } of commands) {
       const name = label(command, root);
       try {
-        // Commands get no stdin: a hook that reads it by accident sees EOF
-        // instead of blocking the whole chain on a terminal that is not there.
-        const result = await withTimeout(deps.exec(command, { cwd: deps.directory, env }), commandTimeoutMs);
+        // stdin carries the event payload and then ends, so a hook that reads
+        // it sees EOF instead of blocking the chain on a terminal not there.
+        const result = await withTimeout(
+          deps.exec(command, { cwd: deps.directory, env, stdin: sessionStartInput }),
+          commandTimeoutMs,
+        );
 
         if (result === TIMED_OUT) {
           await log("warn", `${name} outlived its ${commandTimeoutMs}ms budget — moving on`, { description });
@@ -287,10 +313,51 @@ export async function createBridge(
     settled = true;
   };
 
+  /**
+   * Runs the matching `PostToolUse` commands in order, each awaited like Claude
+   * Code does, so a hook that inspects the working tree sees the tool's effect
+   * before the next call. Each is bounded by `commandTimeoutMs`, and a failure
+   * is logged only: the tool already ran, and its hooks are bookkeeping that
+   * must never interrupt the session. stdout directives are not honoured.
+   */
+  const afterTool = async ({ tool, args, sessionID }: { tool: string; args: unknown; sessionID: string }) => {
+    if (toolCommands.length === 0) return;
+    for (const call of toClaudeToolCalls(tool, args, deps.directory)) {
+      const matching = toolCommands.filter(({ matcher }) => matchesTool(matcher, call.tool_name));
+      if (matching.length === 0) continue;
+      const stdin = JSON.stringify({
+        session_id: sessionID,
+        cwd: deps.directory,
+        hook_event_name: TOOL_EVENT,
+        ...call,
+      });
+      for (const { command, description } of matching) {
+        const name = label(command, root);
+        try {
+          const result = await withTimeout(deps.exec(command, { cwd: deps.directory, env, stdin }), commandTimeoutMs);
+          if (result === TIMED_OUT) {
+            await log("warn", `${name} outlived its ${commandTimeoutMs}ms budget on ${call.tool_name}`, {
+              description,
+            });
+          } else if (result.exitCode !== 0) {
+            await log("warn", `${name} exited ${result.exitCode} on ${call.tool_name}`, {
+              description,
+              stderr: result.stderr.trim().slice(-2000),
+            });
+          }
+        } catch (error) {
+          await log("error", `${name} threw on ${call.tool_name}`, { error: String(error) });
+        }
+      }
+    }
+  };
+
   return {
-    hasCommands: true,
+    hasCommands: commands.length > 0,
+    hasToolCommands: toolCommands.length > 0,
     inject,
     awaitBootstrap,
     systemBlock: () => (systemMessages.length > 0 ? [`## ${EVENT} hooks`, ...systemMessages].join("\n") : undefined),
+    afterTool,
   };
 }

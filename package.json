@@ -1,13 +1,14 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
   "version": "0.3.0",
-  "description": "Bridges Claude Code SessionStart hooks to opencode, which has no hooks of its own",
+  "description": "Bridges Claude Code SessionStart and PostToolUse hooks to opencode, which has no hooks of its own",
   "keywords": [
     "opencode",
     "opencode-plugin",
     "claude-code",
     "hooks",
-    "sessionstart"
+    "sessionstart",
+    "posttooluse"
   ],
   "license": "MIT",
   "author": "Raul Tovar (https://github.com/raultov)",

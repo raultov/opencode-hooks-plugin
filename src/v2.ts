@@ -14,6 +14,7 @@ import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./br
  * | Claude Code                     | opencode V2                           |
  * | ------------------------------- | ------------------------------------- |
  * | `SessionStart` + matcher        | the `setup` body (runs once at load)  |
+ * | `PostToolUse` + matcher         | `tool.hook("execute.after", ...)`     |
  * | `${CLAUDE_PLUGIN_ROOT}`         | the `root` option                     |
  * | stdout `{ systemMessage: ... }` | `session.hook("context", ...)` & co.  |
  * | stdout `{ continue: false }`    | remaining commands are skipped        |
@@ -26,16 +27,21 @@ import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./br
 const CONTEXT_KINDS = ["context", "compaction", "generate", "title"] as const;
 
 /**
- * `node:child_process` execution: `sh -c` with stdin from `/dev/null`, so a
- * hook that reads stdin by accident sees EOF instead of hanging the chain.
+ * `node:child_process` execution: `sh -c` with the event payload on stdin,
+ * closed straight after, so a hook that reads stdin sees EOF instead of
+ * hanging the chain.
  *
  * stdout and stderr are drained as they arrive, so a command abandoned after
  * its budget keeps running without blocking on a full pipe. Like V1, it is
  * never killed.
  */
-export const nodeExec: Exec = (command, { cwd, env }) =>
+export const nodeExec: Exec = (command, { cwd, env, stdin }) =>
   new Promise((resolve) => {
-    const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    // A hook that exits without reading its stdin closes the pipe under us.
+    // That is its right, not a failure of the command.
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(stdin ?? "");
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -87,6 +93,16 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
         exec,
         log,
       });
+
+      if (bridge.hasToolCommands) {
+        // Only a completed call: Claude Code's PostToolUse does not fire for a
+        // tool that failed either.
+        await ctx.tool.hook("execute.after", async (event) => {
+          if (event.status !== "completed") return;
+          await bridge.afterTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
+        });
+      }
+
       if (!bridge.hasCommands || !bridge.inject) return;
 
       for (const kind of CONTEXT_KINDS) {

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`PostToolUse` is bridged.** After each `write`, `edit`, `bash` or `apply_patch` call, the matching
+  `PostToolUse` commands run with a Claude-Code-shaped payload on stdin. `apply_patch` runs them once per
+  file it touches, as an `Edit`. On V1 through `tool.execute.after`; on V2 through `tool.hook("execute.after")`,
+  for completed calls only.
+
+### Changed
+
+- `SessionStart` commands now get the event payload on stdin (`hook_event_name`, `source`, `cwd`) instead of
+  `/dev/null`, as in Claude Code. stdin still ends, so a hook that reads it never hangs.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

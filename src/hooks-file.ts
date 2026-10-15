@@ -75,6 +75,46 @@ export function blankSkipNeedles(skip: readonly string[]): string[] {
   return skip.filter((needle) => needle.trim() === "");
 }
 
+/** A bridged tool-event command, kept with the matcher that selects its tools. */
+export type ToolCommand = ResolvedCommand & {
+  matcher: string;
+};
+
+/**
+ * Whether a tool-event matcher selects a Claude Code tool name.
+ *
+ * Follows Claude Code: an empty matcher or `*` selects every tool, anything
+ * else is a regular expression that must match the whole name, so `Write|Edit`
+ * selects both and `Edit` does not select `NotebookEdit`. A matcher that is not
+ * a valid expression selects nothing.
+ */
+export function matchesTool(matcher: string, tool: string): boolean {
+  if (matcher === "" || matcher === "*") return true;
+  try {
+    return new RegExp(`^(?:${matcher})$`).test(tool);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Selects the commands of a tool event (`PostToolUse`), keeping each one's
+ * matcher, since which of them runs depends on the tool that was called.
+ */
+export function resolveToolCommands(
+  file: HooksFile,
+  event: string,
+  root: string,
+  skip: readonly string[],
+): ToolCommand[] {
+  return (file.hooks?.[event] ?? []).flatMap((group) =>
+    resolveCommands({ hooks: { [event]: [{ hooks: group.hooks }] } }, event, root, [""], skip).map((command) => ({
+      ...command,
+      matcher: group.matcher ?? "",
+    })),
+  );
+}
+
 /**
  * Selects the commands to run for an event and expands the plugin-root placeholder.
  *

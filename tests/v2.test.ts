@@ -6,7 +6,8 @@ import type { CommandResult, Exec } from "../src/bridge.js";
 import { PLUGIN_ROOT_PLACEHOLDER as PH } from "../src/hooks-file.js";
 import { createHooksPluginV2, type HooksPluginV2Dependencies } from "../src/v2.js";
 
-type Recorded = { command: string; env: Record<string, string> };
+type Recorded = { command: string; env: Record<string, string>; stdin?: string };
+type ToolHandler = (event: Record<string, unknown>) => Promise<void> | void;
 type HookHandler = (event: { system: Array<{ type: "text"; text: string }> }) => Promise<void> | void;
 
 /** A minimal opencode V2 context: options, location, and a hook recorder. */
@@ -19,9 +20,10 @@ function harness(
   const executed: Recorded[] = [];
   const logs: Array<Record<string, unknown>> = [];
   const hooks = new Map<string, HookHandler>();
+  const toolHooks = new Map<string, ToolHandler>();
 
   const exec: Exec = (command, commandOptions) => {
-    executed.push({ command, env: commandOptions.env });
+    executed.push({ command, env: commandOptions.env, stdin: commandOptions.stdin });
     const reply = replies(command);
     if (reply.hang) return new Promise<CommandResult>(() => {});
     return Promise.resolve({
@@ -44,9 +46,15 @@ function harness(
         return { dispose: async () => {} };
       },
     },
+    tool: {
+      hook: async (name: string, callback: ToolHandler) => {
+        toolHooks.set(name, callback);
+        return { dispose: async () => {} };
+      },
+    },
   };
 
-  return { ctx, dependencies: { exec, log, ...dependencies }, executed, logs, hooks };
+  return { ctx, dependencies: { exec, log, ...dependencies }, executed, logs, hooks, toolHooks };
 }
 
 async function hooksDir(file: unknown): Promise<string> {
@@ -185,5 +193,42 @@ describe("HooksPluginV2", () => {
     expect(hooks.size).toBe(0);
     await Bun.sleep(10);
     expect(executed).toHaveLength(2);
+  });
+});
+
+describe("HooksPluginV2 PostToolUse", () => {
+  const recorder = {
+    hooks: {
+      PostToolUse: [{ matcher: "Write|Edit|Bash", hooks: [{ type: "command", command: `"${PH}/record.sh"` }] }],
+    },
+  };
+
+  test("runs the matching command after a completed call", async () => {
+    const root = await hooksDir(recorder);
+    const { toolHooks, hooks, executed } = await load(root);
+    expect(hooks.size).toBe(0);
+    await toolHooks.get("execute.after")?.({
+      tool: "write",
+      sessionID: "ses_1",
+      input: { filePath: "/abs/a.ts", content: "" },
+      status: "completed",
+    });
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/record.sh"`]);
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
+      hook_event_name: "PostToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: "/abs/a.ts", content: "" },
+    });
+  });
+
+  test("skips a call that failed", async () => {
+    const { toolHooks, executed } = await load(await hooksDir(recorder));
+    await toolHooks.get("execute.after")?.({ tool: "bash", sessionID: "s", input: { command: "x" }, status: "error" });
+    expect(executed).toHaveLength(0);
+  });
+
+  test("registers no tool hook when PostToolUse is absent", async () => {
+    const { toolHooks } = await load(await hooksDir(twoCommands));
+    expect(toolHooks.size).toBe(0);
   });
 });

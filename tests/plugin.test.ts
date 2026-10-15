@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PLUGIN_ROOT_PLACEHOLDER as PH } from "../src/hooks-file.js";
 import { HooksPlugin, type HooksPluginOptions } from "../src/index.js";
 
-type Recorded = { command: string; env: Record<string, string> };
+type Recorded = { command: string; env: Record<string, string>; stdin?: string };
 
 /** Builds a fake opencode plugin input whose shell records commands instead of running them. */
 function harness(
@@ -20,6 +20,8 @@ function harness(
   const $: any = (strings: TemplateStringsArray, ...expressions: any[]) => {
     shellLines.push(strings.join("…"));
     const command = String(expressions[0] ?? "");
+    // The second interpolation, when there is one, is the stdin redirection.
+    const stdin = expressions[1] === undefined ? undefined : String(expressions[1]);
     let env: Record<string, string> = {};
     const reply = replies(command);
     const result = {
@@ -30,7 +32,7 @@ function harness(
     // Recorded on the next microtask, once the fluent chain has set its options
     // but before anything can await it, so a `hang` command is still observed
     // as started even though it never resolves.
-    queueMicrotask(() => executed.push({ command, env }));
+    queueMicrotask(() => executed.push({ command, env, stdin }));
     // biome-ignore lint/suspicious/noExplicitAny: mirrors BunShellPromise's fluent chain.
     const chain: any = reply.hang ? new Promise(() => {}) : Promise.resolve(result);
     chain.cwd = () => chain;
@@ -211,10 +213,15 @@ describe("HooksPlugin", () => {
     expect(logs.some((entry) => entry.level === "warn" && String(entry.message).includes("20ms budget"))).toBe(true);
   });
 
-  test("redirects command stdin from /dev/null", async () => {
-    const { hooks, shellLines } = await load(root);
+  test("feeds the SessionStart payload on stdin", async () => {
+    const { hooks, executed, shellLines } = await load(root);
     await transform(hooks);
-    expect(shellLines.every((line) => line.includes("< /dev/null"))).toBe(true);
+    expect(shellLines.every((line) => line.includes("< ") && !line.includes("/dev/null"))).toBe(true);
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toEqual({
+      hook_event_name: "SessionStart",
+      source: "startup",
+      cwd: root,
+    });
   });
 
   test("tells the model when a command exits non-zero", async () => {
@@ -308,5 +315,94 @@ describe("HooksPlugin", () => {
     const { hooks, executed } = await load(settingsRoot);
     await transform(hooks);
     expect(executed).toHaveLength(2);
+  });
+});
+
+const recorder = {
+  hooks: {
+    PostToolUse: [
+      {
+        matcher: "Write|Edit|Bash",
+        hooks: [{ type: "command", command: `"${PH}/record.sh"` }],
+      },
+      {
+        matcher: "Bash",
+        hooks: [{ type: "command", command: `"${PH}/bash-only.sh"` }],
+      },
+    ],
+  },
+};
+
+/** Drives `tool.execute.after` for one opencode tool call. */
+async function afterTool(hooks: Awaited<ReturnType<typeof load>>["hooks"], tool: string, args: unknown) {
+  await hooks["tool.execute.after"]?.(
+    { tool, sessionID: "ses_1", callID: "call_1", args },
+    { title: "", output: "", metadata: {} },
+  );
+}
+
+describe("HooksPlugin PostToolUse", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await hooksDir(recorder);
+  });
+
+  test("registers tool.execute.after even with no SessionStart commands", async () => {
+    const { hooks } = await load(root);
+    expect(hooks["tool.execute.after"]).toBeDefined();
+    expect(hooks["experimental.chat.system.transform"]).toBeUndefined();
+  });
+
+  test("registers nothing for tools when PostToolUse is absent", async () => {
+    const { hooks } = await load(await hooksDir(twoCommands));
+    expect(hooks["tool.execute.after"]).toBeUndefined();
+  });
+
+  test("runs the matching commands with a Claude-shaped payload", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "edit", { filePath: "src/a.ts", oldString: "x", newString: "y" });
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/record.sh"`]);
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toEqual({
+      session_id: "ses_1",
+      cwd: root,
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "src/a.ts"), old_string: "x", new_string: "y" },
+    });
+  });
+
+  test("selects commands by matcher", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "bash", { command: "sed -i s/a/b/ f" });
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/record.sh"`, `"${root}/bash-only.sh"`]);
+  });
+
+  test("ignores tools with no Claude Code counterpart", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "read", { filePath: "a" });
+    expect(executed).toHaveLength(0);
+  });
+
+  test("runs once per file an apply_patch touches", async () => {
+    const { hooks, executed } = await load(root);
+    const patchText = "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Delete File: b.ts\n*** End Patch";
+    await afterTool(hooks, "apply_patch", { patchText });
+    expect(executed.map((entry) => JSON.parse(entry.stdin ?? "").tool_input.file_path)).toEqual([
+      join(root, "a.ts"),
+      join(root, "b.ts"),
+    ]);
+  });
+
+  test("logs a failing command without throwing", async () => {
+    const { hooks, logs } = await load(root, {}, () => ({ exitCode: 2, stderr: "boom" }));
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(logs.some((entry) => entry.level === "warn" && String(entry.message).includes("exited 2"))).toBe(true);
+  });
+
+  test("gives up on a command that never returns", async () => {
+    const { hooks, logs } = await load(root, { commandTimeoutMs: 20 }, () => ({ hang: true }));
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(logs.some((entry) => String(entry.message).includes("20ms budget"))).toBe(true);
   });
 });

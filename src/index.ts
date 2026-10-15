@@ -4,7 +4,8 @@ import { type createHooksPluginV2, HooksPluginV2 } from "./v2.js";
 
 export type { Bridge, CommandResult, Exec, HooksPluginOptions, Log, LogLevel } from "./bridge.js";
 export type { Control, Directive } from "./control.js";
-export type { HookEntry, HooksFile, MatcherGroup, ResolvedCommand } from "./hooks-file.js";
+export type { HookEntry, HooksFile, MatcherGroup, ResolvedCommand, ToolCommand } from "./hooks-file.js";
+export type { ClaudeToolCall } from "./tools.js";
 export { HooksPlugin } from "./v1.js";
 export type { HooksPluginV2Dependencies } from "./v2.js";
 export { createHooksPluginV2, HooksPluginV2 } from "./v2.js";

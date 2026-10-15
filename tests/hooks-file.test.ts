@@ -6,9 +6,11 @@ import {
   DEFAULT_MATCHERS,
   type HooksFile,
   hooksFileCandidates,
+  matchesTool,
   PLUGIN_ROOT_PLACEHOLDER as PH,
   readHooksFile,
   resolveCommands,
+  resolveToolCommands,
 } from "../src/hooks-file.js";
 
 const ROOT = "/opt/toolkit";
@@ -134,5 +136,43 @@ describe("readHooksFile", () => {
     const broken = join(dir, "hooks.json");
     await writeFile(broken, "{ not json");
     await expect(readHooksFile([broken])).rejects.toThrow();
+  });
+});
+
+describe("matchesTool", () => {
+  test("an empty matcher or * selects every tool", () => {
+    expect(matchesTool("", "Bash")).toBe(true);
+    expect(matchesTool("*", "Bash")).toBe(true);
+  });
+
+  test("matches the whole name, not a substring", () => {
+    expect(matchesTool("Write|Edit", "Edit")).toBe(true);
+    expect(matchesTool("Write|Edit", "NotebookEdit")).toBe(false);
+  });
+
+  test("an invalid expression selects nothing", () => {
+    expect(matchesTool("(", "Bash")).toBe(false);
+  });
+});
+
+describe("resolveToolCommands", () => {
+  test("keeps each command's matcher and applies skip", () => {
+    const file: HooksFile = {
+      hooks: {
+        PostToolUse: [
+          { matcher: "Bash", hooks: [{ type: "command", command: `"${PH}/a.sh"` }] },
+          {
+            hooks: [
+              { type: "command", command: `"${PH}/b.sh"` },
+              { type: "command", command: "skip-me" },
+            ],
+          },
+        ],
+      },
+    };
+    expect(resolveToolCommands(file, "PostToolUse", ROOT, ["skip-me"])).toEqual([
+      { command: `"${ROOT}/a.sh"`, description: undefined, matcher: "Bash" },
+      { command: `"${ROOT}/b.sh"`, description: undefined, matcher: "" },
+    ]);
   });
 });
