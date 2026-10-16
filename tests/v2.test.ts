@@ -211,7 +211,9 @@ describe("HooksPluginV2 PostToolUse", () => {
   test("runs the matching command after a completed call", async () => {
     const root = await hooksDir(recorder);
     const { toolHooks, hooks, executed } = await load(root);
-    expect(hooks.size).toBe(0);
+    expect([...hooks.keys()]).toEqual(["model.request"]);
+    // biome-ignore lint/suspicious/noExplicitAny: the request hook is typed for the system prompt.
+    await hooks.get("model.request")?.({ sessionID: "ses_1", model: { id: "claude-opus-5-5" } } as any);
     await toolHooks.get("execute.after")?.({
       tool: "write",
       sessionID: "ses_1",
@@ -221,6 +223,7 @@ describe("HooksPluginV2 PostToolUse", () => {
     expect(executed.map((entry) => entry.command)).toEqual([`"${root}/record.sh"`]);
     expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
       hook_event_name: "PostToolUse",
+      model: "claude-opus-5-5",
       tool_name: "Write",
       tool_input: { file_path: "/abs/a.ts", content: "alpha" },
     });

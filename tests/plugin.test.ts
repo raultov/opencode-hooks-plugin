@@ -391,6 +391,21 @@ describe("HooksPlugin PostToolUse", () => {
     });
   });
 
+  test("adds the model the session last called", async () => {
+    const { hooks, executed } = await load(root);
+    const params = { temperature: 0, topP: 1, topK: 0, maxOutputTokens: undefined, options: {} };
+    // biome-ignore lint/suspicious/noExplicitAny: only sessionID and model.id are read.
+    await hooks["chat.params"]?.({ sessionID: "ses_1", model: { id: "claude-opus-5-5" } } as any, params);
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(JSON.parse(executed[0]?.stdin ?? "").model).toBe("claude-opus-5-5");
+  });
+
+  test("sends no model before any model call", async () => {
+    const { hooks, executed } = await load(root);
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(JSON.parse(executed[0]?.stdin ?? "")).not.toHaveProperty("model");
+  });
+
   test("selects commands by matcher", async () => {
     const { hooks, executed } = await load(root);
     await afterTool(hooks, "bash", { command: "sed -i s/a/b/ f" });

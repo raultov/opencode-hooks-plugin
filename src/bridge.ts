@@ -148,6 +148,8 @@ export type Bridge = {
   systemBlock(): string | undefined;
   /** Runs the `PostToolUse` commands matching one finished opencode tool call. */
   afterTool(call: { tool: string; args: unknown; sessionID: string }): Promise<void>;
+  /** Records the model a session last called, for the `PostToolUse` payload. */
+  noteModel(sessionID: string, model: string): void;
 };
 
 /** A bridge with nothing to run, for the early exits. */
@@ -159,6 +161,7 @@ function idleBridge(inject: boolean): Bridge {
     awaitBootstrap: () => Promise.resolve(),
     systemBlock: () => undefined,
     afterTool: () => Promise.resolve(),
+    noteModel: () => undefined,
   };
 }
 
@@ -323,8 +326,17 @@ export async function createBridge(
    * is logged only: the tool already ran, and its hooks are bookkeeping that
    * must never interrupt the session. stdout directives are not honoured.
    */
+  /**
+   * The model each session last called. Claude Code puts `model` in its
+   * SessionStart payload only; opencode can switch models mid-session, so the
+   * latest call is what a tool call is attributed to. Subagents run in their
+   * own sessions, so each is attributed to its own model.
+   */
+  const models = new Map<string, string>();
+
   const afterTool = async ({ tool, args, sessionID }: { tool: string; args: unknown; sessionID: string }) => {
     if (toolCommands.length === 0) return;
+    const model = models.get(sessionID);
     for (const call of toClaudeToolCalls(tool, args, deps.directory)) {
       const matching = toolCommands.filter(({ matcher }) => matchesTool(matcher, call.tool_name));
       if (matching.length === 0) continue;
@@ -332,6 +344,7 @@ export async function createBridge(
         session_id: sessionID,
         cwd: deps.directory,
         hook_event_name: TOOL_EVENT,
+        ...(model ? { model } : {}),
         ...call,
       });
       for (const { command, description } of matching) {
@@ -362,5 +375,8 @@ export async function createBridge(
     awaitBootstrap,
     systemBlock: () => (systemMessages.length > 0 ? [`## ${EVENT} hooks`, ...systemMessages].join("\n") : undefined),
     afterTool,
+    noteModel: (sessionID, model) => {
+      models.set(sessionID, model);
+    },
   };
 }

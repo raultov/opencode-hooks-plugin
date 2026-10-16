@@ -101,6 +101,11 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
           if (event.status !== "completed") return;
           await bridge.afterTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
         });
+        // Fires before every model call, so it always holds the model the next
+        // tool call came from.
+        await ctx.session.hook("model.request", (event) => {
+          bridge.noteModel(event.sessionID, event.model.id);
+        });
       }
 
       if (!bridge.hasCommands || !bridge.inject) return;

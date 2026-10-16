@@ -50,6 +50,11 @@ export const HooksPlugin: Plugin = async ({ $, client, directory }: PluginInput,
     hooks["tool.execute.after"] = async (input) => {
       await bridge.afterTool({ tool: input.tool, args: input.args, sessionID: input.sessionID });
     };
+    // Fires before every model call, so it always holds the model the next
+    // tool call came from.
+    hooks["chat.params"] = async (input) => {
+      bridge.noteModel(input.sessionID, input.model.id);
+    };
   }
 
   if (!bridge.hasCommands || !bridge.inject) return hooks;
