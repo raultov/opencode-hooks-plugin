@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+
+### Added
+
+- The `PostToolUse` payload carries `model`: the id of the model the session last called. It is read
+  from V1's `chat.params` and V2's `model.request` hooks, so a subagent's calls carry its own model.
+
 ## [0.4.1] - 2026-10-15
 
 ### Added
