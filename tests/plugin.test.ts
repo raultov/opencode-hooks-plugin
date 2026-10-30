@@ -406,6 +406,20 @@ describe("HooksPlugin PostToolUse", () => {
     expect(JSON.parse(executed[0]?.stdin ?? "")).not.toHaveProperty("model");
   });
 
+  test("ignores the model of a hidden agent's call", async () => {
+    const { hooks, executed } = await load(root);
+    const params = { temperature: 0, topP: 1, topK: 0, maxOutputTokens: undefined, options: {} };
+    const call = (agent: string, id: string) =>
+      // biome-ignore lint/suspicious/noExplicitAny: only sessionID, agent and model.id are read.
+      hooks["chat.params"]?.({ sessionID: "ses_1", agent, model: { id } } as any, params);
+    await call("build", "claude-opus-5-5");
+    await call("title", "claude-haiku-5-5");
+    await call("summary", "claude-haiku-5-5");
+    await call("compaction", "claude-haiku-5-5");
+    await afterTool(hooks, "write", { filePath: "a", content: "" });
+    expect(JSON.parse(executed[0]?.stdin ?? "").model).toBe("claude-opus-5-5");
+  });
+
   test("selects commands by matcher", async () => {
     const { hooks, executed } = await load(root);
     await afterTool(hooks, "bash", { command: "sed -i s/a/b/ f" });

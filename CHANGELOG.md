@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`model` could name the title model, not the session's.** opencode generates a session's title on the same
+  session id, often with a smaller model, and the plugin kept the model of every call. A tool call that followed
+  carried that model. Only the session's own turns count now: V2 requests of kind `primary`, and V1 calls from
+  any agent but the hidden `title`, `summary` and `compaction`.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added

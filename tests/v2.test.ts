@@ -213,7 +213,8 @@ describe("HooksPluginV2 PostToolUse", () => {
     const { toolHooks, hooks, executed } = await load(root);
     expect([...hooks.keys()]).toEqual(["model.request"]);
     // biome-ignore lint/suspicious/noExplicitAny: the request hook is typed for the system prompt.
-    await hooks.get("model.request")?.({ sessionID: "ses_1", model: { id: "claude-opus-5-5" } } as any);
+    const primary = { sessionID: "ses_1", kind: "primary", model: { id: "claude-opus-5-5" } } as any;
+    await hooks.get("model.request")?.(primary);
     await toolHooks.get("execute.after")?.({
       tool: "write",
       sessionID: "ses_1",
@@ -227,6 +228,25 @@ describe("HooksPluginV2 PostToolUse", () => {
       tool_name: "Write",
       tool_input: { file_path: "/abs/a.ts", content: "alpha" },
     });
+  });
+
+  test("keeps the model of the session's own turns only", async () => {
+    const root = await hooksDir(recorder);
+    const { toolHooks, hooks, executed } = await load(root);
+    const request = (kind: string, id: string) =>
+      // biome-ignore lint/suspicious/noExplicitAny: the request hook is typed for the system prompt.
+      hooks.get("model.request")?.({ sessionID: "ses_1", kind, model: { id } } as any);
+    await request("primary", "claude-opus-5-5");
+    await request("title", "claude-haiku-5-5");
+    await request("compaction", "claude-haiku-5-5");
+    await request("generate", "claude-haiku-5-5");
+    await toolHooks.get("execute.after")?.({
+      tool: "write",
+      sessionID: "ses_1",
+      input: { path: "/abs/a.ts", content: "alpha" },
+      status: "completed",
+    });
+    expect(JSON.parse(executed[0]?.stdin ?? "").model).toBe("claude-opus-5-5");
   });
 
   test("maps a V2 edit", async () => {

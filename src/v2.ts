@@ -102,8 +102,11 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
           await bridge.afterTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
         });
         // Fires before every model call, so it always holds the model the next
-        // tool call came from.
+        // tool call came from. Only the session's own turns: the title and
+        // compaction requests share its sessionID, and a title model (often a
+        // small one) noted last would be stamped on the next tool call.
         await ctx.session.hook("model.request", (event) => {
+          if (event.kind !== "primary") return;
           bridge.noteModel(event.sessionID, event.model.id);
         });
       }

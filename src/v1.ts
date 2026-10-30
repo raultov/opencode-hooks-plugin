@@ -1,6 +1,10 @@
 import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin";
 import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./bridge.js";
 
+// opencode V1's built-in hidden agents. They run on the user's session but
+// never call a tool, so their model is not the one a tool call came from.
+const HIDDEN_AGENTS = new Set(["title", "summary", "compaction"]);
+
 /**
  * Bridges Claude Code `SessionStart` hooks to opencode V1.
  *
@@ -51,8 +55,11 @@ export const HooksPlugin: Plugin = async ({ $, client, directory }: PluginInput,
       await bridge.afterTool({ tool: input.tool, args: input.args, sessionID: input.sessionID });
     };
     // Fires before every model call, so it always holds the model the next
-    // tool call came from.
+    // tool call came from. V1 has no request kind, so its hidden agents are
+    // skipped by name: their requests share the sessionID, and a title model
+    // (often a small one) noted last would be stamped on the next tool call.
     hooks["chat.params"] = async (input) => {
+      if (HIDDEN_AGENTS.has(input.agent)) return;
       bridge.noteModel(input.sessionID, input.model.id);
     };
   }
