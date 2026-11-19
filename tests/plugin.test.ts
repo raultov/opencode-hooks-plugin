@@ -315,7 +315,7 @@ describe("HooksPlugin", () => {
   });
 
   test("registers no hooks when SessionStart is absent", async () => {
-    const other = await hooksDir({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "x" }] }] } });
+    const other = await hooksDir({ hooks: { Stop: [{ hooks: [{ type: "command", command: "x" }] }] } });
     const { hooks } = await load(other);
     expect(hooks).toEqual({});
   });
@@ -465,5 +465,58 @@ describe("HooksPlugin PostToolUse", () => {
     const { hooks, logs } = await load(root, { commandTimeoutMs: 20 }, () => ({ hang: true }));
     await afterTool(hooks, "write", { filePath: "a", content: "" });
     expect(logs.some((entry) => String(entry.message).includes("20ms budget"))).toBe(true);
+  });
+});
+
+describe("HooksPlugin PreToolUse", () => {
+  const photographer = {
+    hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `"${PH}/photo.sh"` }] }],
+    },
+  };
+
+  /** Drives `tool.execute.before`, which V1 hands the arguments in `output`. */
+  async function beforeTool(hooks: Awaited<ReturnType<typeof load>>["hooks"], tool: string, args: unknown) {
+    await hooks["tool.execute.before"]?.({ tool, sessionID: "ses_1", callID: "call_1" }, { args });
+  }
+
+  test("registers tool.execute.before and the model hook, but not tool.execute.after", async () => {
+    const { hooks } = await load(await hooksDir(photographer));
+    expect(hooks["tool.execute.before"]).toBeDefined();
+    expect(hooks["chat.params"]).toBeDefined();
+    expect(hooks["tool.execute.after"]).toBeUndefined();
+  });
+
+  test("registers nothing before tools when PreToolUse is absent", async () => {
+    const { hooks } = await load(await hooksDir(recorder));
+    expect(hooks["tool.execute.before"]).toBeUndefined();
+  });
+
+  test("runs the matching command with a PreToolUse payload", async () => {
+    const root = await hooksDir(photographer);
+    const { hooks, executed } = await load(root);
+    const params = { temperature: 0, topP: 1, topK: 0, maxOutputTokens: undefined, options: {} };
+    // biome-ignore lint/suspicious/noExplicitAny: only sessionID, agent and model.id are read.
+    const input = { sessionID: "ses_1", agent: "build", model: { id: "claude-opus-5-5" } } as any;
+    await hooks["chat.params"]?.(input, params);
+    await beforeTool(hooks, "bash", { command: "sed -i s/a/b/ f", workdir: "/other" });
+    await beforeTool(hooks, "write", { filePath: "a", content: "" });
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/photo.sh"`]);
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toEqual({
+      session_id: "ses_1",
+      cwd: root,
+      hook_event_name: "PreToolUse",
+      model: "claude-opus-5-5",
+      tool_name: "Bash",
+      tool_input: { command: "cd '/other' && sed -i s/a/b/ f" },
+    });
+  });
+
+  test("never blocks the call, whatever the command returns", async () => {
+    const { hooks, logs } = await load(await hooksDir(photographer), {}, () => ({ exitCode: 2, stderr: "no" }));
+    const output = { args: { command: "ls" } };
+    await hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "ses_1", callID: "call_1" }, output);
+    expect(output.args).toEqual({ command: "ls" });
+    expect(logs.some((entry) => entry.level === "warn" && String(entry.message).includes("exited 2"))).toBe(true);
   });
 });

@@ -184,7 +184,7 @@ describe("HooksPluginV2", () => {
   });
 
   test("registers no hooks when SessionStart is absent", async () => {
-    const other = await hooksDir({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "x" }] }] } });
+    const other = await hooksDir({ hooks: { Stop: [{ hooks: [{ type: "command", command: "x" }] }] } });
     const { hooks } = await load(other);
     expect(hooks.size).toBe(0);
   });
@@ -300,5 +300,38 @@ describe("HooksPluginV2 PostToolUse", () => {
   test("registers no tool hook when PostToolUse is absent", async () => {
     const { toolHooks } = await load(await hooksDir(twoCommands));
     expect(toolHooks.size).toBe(0);
+  });
+});
+
+describe("HooksPluginV2 PreToolUse", () => {
+  const photographer = {
+    hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `"${PH}/photo.sh"` }] }],
+    },
+  };
+
+  test("runs the matching command before the call, with workdir as a cd", async () => {
+    const root = await hooksDir(photographer);
+    const { toolHooks, hooks, executed } = await load(root);
+    expect([...toolHooks.keys()]).toEqual(["execute.before"]);
+    expect([...hooks.keys()]).toEqual(["model.request"]);
+    await toolHooks.get("execute.before")?.({
+      tool: "shell",
+      sessionID: "ses_1",
+      input: { command: "git commit -m x", workdir: "/other/repo" },
+    });
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/photo.sh"`]);
+    expect(JSON.parse(executed[0]?.stdin ?? "")).toMatchObject({
+      session_id: "ses_1",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "cd '/other/repo' && git commit -m x" },
+    });
+  });
+
+  test("runs nothing before a tool the matcher does not select", async () => {
+    const { toolHooks, executed } = await load(await hooksDir(photographer));
+    await toolHooks.get("execute.before")?.({ tool: "write", sessionID: "s", input: { path: "/a", content: "" } });
+    expect(executed).toHaveLength(0);
   });
 });

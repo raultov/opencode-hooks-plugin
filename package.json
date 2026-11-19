@@ -1,13 +1,14 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
   "version": "0.5.1",
-  "description": "Bridges Claude Code SessionStart and PostToolUse hooks to opencode, which has no hooks of its own",
+  "description": "Bridges Claude Code SessionStart, PreToolUse and PostToolUse hooks to opencode, which has no hooks of its own",
   "keywords": [
     "opencode",
     "opencode-plugin",
     "claude-code",
     "hooks",
     "sessionstart",
+    "pretooluse",
     "posttooluse"
   ],
   "license": "MIT",

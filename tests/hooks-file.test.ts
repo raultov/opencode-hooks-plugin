@@ -62,6 +62,20 @@ describe("resolveCommands", () => {
     expect(resolve().some((entry) => entry.command === "should-not-run")).toBe(false);
   });
 
+  test("honours a group whose matcher lists an honoured value among alternatives", () => {
+    const file: HooksFile = {
+      hooks: {
+        SessionStart: [
+          { matcher: "startup|resume", hooks: [{ type: "command", command: "either" }] },
+          { matcher: "clear|compact", hooks: [{ type: "command", command: "neither" }] },
+        ],
+      },
+    };
+    expect(resolveCommands(file, "SessionStart", ROOT, DEFAULT_MATCHERS, []).map((entry) => entry.command)).toEqual([
+      "either",
+    ]);
+  });
+
   test("includes entries with no matcher", () => {
     expect(resolve().some((entry) => entry.command === "no-matcher-runs")).toBe(true);
   });

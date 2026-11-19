@@ -15,6 +15,7 @@ const HIDDEN_AGENTS = new Set(["title", "summary", "compaction"]);
  * | Claude Code                     | opencode V1                           |
  * | ------------------------------- | ------------------------------------- |
  * | `SessionStart` + matcher        | this plugin function body             |
+ * | `PreToolUse` + matcher          | `tool.execute.before`                 |
  * | `PostToolUse` + matcher         | `tool.execute.after`                  |
  * | `${CLAUDE_PLUGIN_ROOT}`         | the `root` option                     |
  * | stdout `{ systemMessage: ... }` | `experimental.chat.system.transform`  |
@@ -48,12 +49,23 @@ export const HooksPlugin: Plugin = async ({ $, client, directory }: PluginInput,
   const bridge = await createBridge(options, { directory, exec, log });
   const hooks: Hooks = {};
 
+  if (bridge.hasPreToolCommands) {
+    // Awaited before the call runs, so a hook sees the tree as the tool found
+    // it. V1 hands the arguments over in `output`, not `input`.
+    hooks["tool.execute.before"] = async (input, output) => {
+      await bridge.beforeTool({ tool: input.tool, args: output.args, sessionID: input.sessionID });
+    };
+  }
+
   if (bridge.hasToolCommands) {
     // Only fires for a call that returned: a tool that threw never reaches it,
     // as a failed call never reaches Claude Code's PostToolUse.
     hooks["tool.execute.after"] = async (input) => {
       await bridge.afterTool({ tool: input.tool, args: input.args, sessionID: input.sessionID });
     };
+  }
+
+  if (bridge.hasToolCommands || bridge.hasPreToolCommands) {
     // Fires before every model call, so it always holds the model the next
     // tool call came from. V1 has no request kind, so its hidden agents are
     // skipped by name: their requests share the sessionID, and a title model

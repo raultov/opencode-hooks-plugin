@@ -63,6 +63,24 @@ describe("toClaudeToolCalls", () => {
     ]);
   });
 
+  test("writes a shell call's workdir as a cd in front of the command", () => {
+    expect(toClaudeToolCalls("shell", { command: "sed -i s/a/b/ f", workdir: "/other/it's" }, DIR)).toEqual([
+      { tool_name: "Bash", tool_input: { command: `cd '/other/it'\\''s' && sed -i s/a/b/ f` } },
+    ]);
+  });
+
+  test("resolves a relative workdir against the project directory", () => {
+    expect(toClaudeToolCalls("bash", { command: "ls", workdir: "sub" }, DIR)).toEqual([
+      { tool_name: "Bash", tool_input: { command: "cd '/repo/sub' && ls" } },
+    ]);
+  });
+
+  test("leaves the command alone when workdir is the project directory", () => {
+    expect(toClaudeToolCalls("shell", { command: "ls", workdir: "/repo/" }, DIR)).toEqual([
+      { tool_name: "Bash", tool_input: { command: "ls" } },
+    ]);
+  });
+
   test("maps the V2 patch like apply_patch", () => {
     expect(toClaudeToolCalls("patch", { patchText: "*** Add File: a.ts\n+x" }, DIR)).toEqual([
       { tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } },

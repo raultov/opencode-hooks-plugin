@@ -2,15 +2,15 @@ import { resolve } from "node:path";
 
 /**
  * Translates opencode tool calls into the shape Claude Code hands its
- * `PostToolUse` hooks, so a hook written for Claude Code reads the same
- * `tool_name` and `tool_input` under opencode.
+ * `PreToolUse` and `PostToolUse` hooks, so a hook written for Claude Code
+ * reads the same `tool_name` and `tool_input` under opencode.
  *
  * Only the tools that change files are translated. A hook matched on any other
  * Claude Code tool has no opencode counterpart this plugin can vouch for, so it
  * is not run rather than run against a guessed payload.
  */
 
-/** One Claude Code tool call, as a `PostToolUse` hook sees it. */
+/** One Claude Code tool call, as a `PreToolUse` or `PostToolUse` hook sees it. */
 export type ClaudeToolCall = {
   tool_name: string;
   tool_input: Record<string, unknown>;
@@ -53,6 +53,25 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const defined = (input: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 
+/** Quotes a path for `sh`, so spaces and quotes in it survive. */
+const shellQuote = (path: string): string => `'${path.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The command as a Claude Code agent would have written it.
+ *
+ * opencode runs a shell call in its `workdir` argument. Claude Code's `Bash`
+ * has none, so an agent there writes `cd <dir> && <command>`, and hooks read
+ * the directory from the command text: a provenance recorder checks every
+ * repository a command names. Without the prefix, a call that edits another
+ * repository through `workdir` names no repository at all. A `workdir` equal to
+ * the project directory adds nothing, so the command is left as it is.
+ */
+function inWorkdir(command: unknown, workdir: unknown, directory: string): unknown {
+  if (typeof command !== "string" || typeof workdir !== "string" || workdir === "") return command;
+  const target = resolve(directory, workdir);
+  return target === resolve(directory) ? command : `cd ${shellQuote(target)} && ${command}`;
+}
+
 /**
  * Maps one opencode tool call onto the Claude Code calls it amounts to.
  *
@@ -65,7 +84,9 @@ const defined = (input: Record<string, unknown>): Record<string, unknown> =>
  *
  * The generations differ in arguments too: V1 names the file `filePath`, V2
  * `path`; V2's `shell` takes `background` where Claude Code's `Bash` takes
- * `run_in_background`. Both are read, so one mapping serves either.
+ * `run_in_background`. Both are read, so one mapping serves either. A shell
+ * call's `workdir` becomes a `cd` in front of the command, as Claude Code's
+ * `Bash` has no such argument.
  *
  * The patch tools have no Claude Code twin. Splitting one into an `Edit` per
  * file keeps the payload exact: a hook gets a real `file_path` instead of a
@@ -106,7 +127,7 @@ export function toClaudeToolCalls(tool: string, args: unknown, directory: string
         {
           tool_name: "Bash",
           tool_input: defined({
-            command: input.command,
+            command: inWorkdir(input.command, input.workdir, directory),
             description: input.description,
             timeout: input.timeout,
             run_in_background: input.background,

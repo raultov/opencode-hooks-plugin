@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`PreToolUse` is bridged,** to V1's `tool.execute.before` and V2's `tool.hook("execute.before")`. Commands get the
+  same payload as `PostToolUse`, before the call runs. They cannot block or change it. agents-toolkit 1.174.0 needs
+  it: its provenance recorder photographs each repository before a shell call, and without it the first shell edit
+  of every session went unrecorded.
+- A shell call's `workdir` reaches hooks as `cd '<dir>' && <command>`, the way a Claude Code agent writes it. Before,
+  a command run in another repository through `workdir` named no repository at all.
+
+### Fixed
+
+- A `SessionStart` group whose matcher lists alternatives, such as `startup|resume`, now runs when any of them is
+  honoured. Before, it never ran.
+
 ## [0.5.1] - 2026-10-30
 
 ### Fixed

@@ -14,6 +14,7 @@ import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./br
  * | Claude Code                     | opencode V2                           |
  * | ------------------------------- | ------------------------------------- |
  * | `SessionStart` + matcher        | the `setup` body (runs once at load)  |
+ * | `PreToolUse` + matcher          | `tool.hook("execute.before", ...)`    |
  * | `PostToolUse` + matcher         | `tool.hook("execute.after", ...)`     |
  * | `${CLAUDE_PLUGIN_ROOT}`         | the `root` option                     |
  * | stdout `{ systemMessage: ... }` | `session.hook("context", ...)` & co.  |
@@ -94,6 +95,14 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
         log,
       });
 
+      if (bridge.hasPreToolCommands) {
+        // Awaited before the call runs, so a hook sees the tree as the tool
+        // found it.
+        await ctx.tool.hook("execute.before", async (event) => {
+          await bridge.beforeTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
+        });
+      }
+
       if (bridge.hasToolCommands) {
         // Only a completed call: Claude Code's PostToolUse does not fire for a
         // tool that failed either.
@@ -101,6 +110,9 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
           if (event.status !== "completed") return;
           await bridge.afterTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
         });
+      }
+
+      if (bridge.hasToolCommands || bridge.hasPreToolCommands) {
         // Fires before every model call, so it always holds the model the next
         // tool call came from. Only the session's own turns: the title and
         // compaction requests share its sessionID, and a title model (often a

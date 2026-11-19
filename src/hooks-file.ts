@@ -98,7 +98,7 @@ export function matchesTool(matcher: string, tool: string): boolean {
 }
 
 /**
- * Selects the commands of a tool event (`PostToolUse`), keeping each one's
+ * Selects the commands of a tool event (`PreToolUse`, `PostToolUse`), keeping each one's
  * matcher, since which of them runs depends on the tool that was called.
  */
 export function resolveToolCommands(
@@ -121,7 +121,8 @@ export function resolveToolCommands(
  * @param file     parsed hooks file
  * @param event    Claude Code event name, e.g. `SessionStart`
  * @param root     value the plugin-root placeholder expands to
- * @param matchers matcher values to honour
+ * @param matchers matcher values to honour. A group matcher such as
+ *                 `startup|resume` is honoured when any alternative is.
  * @param skip     substrings; a command containing any of them is dropped.
  *                 Blank entries are ignored rather than matching everything.
  */
@@ -135,8 +136,10 @@ export function resolveCommands(
   const allowed = new Set(matchers);
   const needles = skip.filter((needle) => needle.trim() !== "");
 
+  // Claude Code reads `startup|resume` as either source, so each alternative
+  // is checked on its own. Its toolkit hooks files ship such groups.
   return (file.hooks?.[event] ?? [])
-    .filter((group) => allowed.has(group.matcher ?? ""))
+    .filter((group) => (group.matcher ?? "").split("|").some((value) => allowed.has(value)))
     .flatMap((group) => group.hooks ?? [])
     .flatMap((entry) => {
       if (entry.type !== "command" || typeof entry.command !== "string") return [];

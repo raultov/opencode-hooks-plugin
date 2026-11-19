@@ -15,8 +15,8 @@ import { toClaudeToolCalls } from "./tools.js";
  *
  * Both generations map Claude Code's `SessionStart` event the same way: run
  * the bridged commands once when the plugin loads, then surface their control
- * directives to the model. `PostToolUse` commands run after each opencode tool
- * call that has a Claude Code counterpart. Only the mechanics differ per generation — how a
+ * directives to the model. `PreToolUse` and `PostToolUse` commands run before
+ * and after each opencode tool call that has a Claude Code counterpart. Only the mechanics differ per generation — how a
  * command is executed and where diagnostics go — so those two concerns are
  * injected here and the bridging contract lives in one place.
  */
@@ -94,6 +94,9 @@ export const EVENT = "SessionStart";
 /** The Claude Code event run after each tool call. See the README for the tool mapping. */
 export const TOOL_EVENT = "PostToolUse";
 
+/** The Claude Code event run before each tool call. Same tool mapping as `TOOL_EVENT`. */
+export const PRE_TOOL_EVENT = "PreToolUse";
+
 export const DEFAULT_TIMEOUT_MS = 20_000;
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
@@ -140,15 +143,19 @@ export type Bridge = {
   readonly hasCommands: boolean;
   /** False when no `PostToolUse` command was bridged. */
   readonly hasToolCommands: boolean;
+  /** False when no `PreToolUse` command was bridged. */
+  readonly hasPreToolCommands: boolean;
   /** Whether `systemMessage` directives should reach the system prompt. */
   readonly inject: boolean;
   /** Waits for the commands, at most `timeoutMs`. Settles at once on later calls. */
   awaitBootstrap(): Promise<void>;
   /** The system block to inject, or undefined when there is nothing to say. */
   systemBlock(): string | undefined;
+  /** Runs the `PreToolUse` commands matching one opencode tool call about to run. */
+  beforeTool(call: { tool: string; args: unknown; sessionID: string }): Promise<void>;
   /** Runs the `PostToolUse` commands matching one finished opencode tool call. */
   afterTool(call: { tool: string; args: unknown; sessionID: string }): Promise<void>;
-  /** Records the model a session last called, for the `PostToolUse` payload. */
+  /** Records the model a session last called, for the tool payloads. */
   noteModel(sessionID: string, model: string): void;
 };
 
@@ -157,9 +164,11 @@ function idleBridge(inject: boolean): Bridge {
   return {
     hasCommands: false,
     hasToolCommands: false,
+    hasPreToolCommands: false,
     inject,
     awaitBootstrap: () => Promise.resolve(),
     systemBlock: () => undefined,
+    beforeTool: () => Promise.resolve(),
     afterTool: () => Promise.resolve(),
     noteModel: () => undefined,
   };
@@ -224,8 +233,9 @@ export async function createBridge(
 
   const commands = resolveCommands(found.file, EVENT, root, matchers, skip);
   const toolCommands = resolveToolCommands(found.file, TOOL_EVENT, root, skip);
-  if (commands.length === 0 && toolCommands.length === 0) {
-    await log("debug", `no ${EVENT} or ${TOOL_EVENT} commands to bridge`, { hooksFile: found.path });
+  const preToolCommands = resolveToolCommands(found.file, PRE_TOOL_EVENT, root, skip);
+  if (commands.length === 0 && toolCommands.length === 0 && preToolCommands.length === 0) {
+    await log("debug", `no ${EVENT}, ${PRE_TOOL_EVENT} or ${TOOL_EVENT} commands to bridge`, { hooksFile: found.path });
     return idleBridge(inject);
   }
 
@@ -320,13 +330,6 @@ export async function createBridge(
   };
 
   /**
-   * Runs the matching `PostToolUse` commands in order, each awaited like Claude
-   * Code does, so a hook that inspects the working tree sees the tool's effect
-   * before the next call. Each is bounded by `commandTimeoutMs`, and a failure
-   * is logged only: the tool already ran, and its hooks are bookkeeping that
-   * must never interrupt the session. stdout directives are not honoured.
-   */
-  /**
    * The model each session last called. Claude Code puts `model` in its
    * SessionStart payload only; opencode can switch models mid-session, so the
    * latest call is what a tool call is attributed to. Subagents run in their
@@ -334,16 +337,28 @@ export async function createBridge(
    */
   const models = new Map<string, string>();
 
-  const afterTool = async ({ tool, args, sessionID }: { tool: string; args: unknown; sessionID: string }) => {
-    if (toolCommands.length === 0) return;
+  /**
+   * Runs the matching tool-event commands in order, each awaited like Claude
+   * Code does. After a call, a hook that inspects the working tree sees the
+   * tool's effect; before one, it sees the tree as the tool found it. Each is
+   * bounded by `commandTimeoutMs`, and a failure is logged only: tool hooks are
+   * bookkeeping that must never interrupt the session. stdout directives and
+   * exit codes are not honoured, so a `PreToolUse` hook cannot block a call.
+   */
+  const runToolCommands = async (
+    event: typeof TOOL_EVENT | typeof PRE_TOOL_EVENT,
+    commandsForEvent: typeof toolCommands,
+    { tool, args, sessionID }: { tool: string; args: unknown; sessionID: string },
+  ) => {
+    if (commandsForEvent.length === 0) return;
     const model = models.get(sessionID);
     for (const call of toClaudeToolCalls(tool, args, deps.directory)) {
-      const matching = toolCommands.filter(({ matcher }) => matchesTool(matcher, call.tool_name));
+      const matching = commandsForEvent.filter(({ matcher }) => matchesTool(matcher, call.tool_name));
       if (matching.length === 0) continue;
       const stdin = JSON.stringify({
         session_id: sessionID,
         cwd: deps.directory,
-        hook_event_name: TOOL_EVENT,
+        hook_event_name: event,
         ...(model ? { model } : {}),
         ...call,
       });
@@ -371,10 +386,12 @@ export async function createBridge(
   return {
     hasCommands: commands.length > 0,
     hasToolCommands: toolCommands.length > 0,
+    hasPreToolCommands: preToolCommands.length > 0,
     inject,
     awaitBootstrap,
     systemBlock: () => (systemMessages.length > 0 ? [`## ${EVENT} hooks`, ...systemMessages].join("\n") : undefined),
-    afterTool,
+    beforeTool: (call) => runToolCommands(PRE_TOOL_EVENT, preToolCommands, call),
+    afterTool: (call) => runToolCommands(TOOL_EVENT, toolCommands, call),
     noteModel: (sessionID, model) => {
       models.set(sessionID, model);
     },
