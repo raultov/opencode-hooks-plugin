@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
 ### Added
 
 - **`PreToolUse` is bridged,** to V1's `tool.execute.before` and V2's `tool.hook("execute.before")`. Commands get the
