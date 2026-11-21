@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Every option below is off by default: with none of them set, hooks run exactly as in 0.6.0.
+
+### Added
+
+- **`preToolDecisions`:** `PreToolUse` commands decide about the call, as Claude Code reads them. Exit 2 blocks it with
+  stderr as the reason; `permissionDecision: "deny"`, the deprecated `decision: "block"` and `continue: false` block it;
+  `updatedInput` is written back to opencode's arguments; `additionalContext` is appended to the call's result. `ask`
+  cannot prompt from a plugin and is logged. V1 blocks by throwing from `tool.execute.before`; V2 by rejecting from
+  `execute.before`, which fails the call from opencode 2.0.29 on (older V2 hosts log the denial and run the call).
+- **`failClosed`:** with `preToolDecisions`, a `PreToolUse` command that times out, fails to start or exits other than
+  0 or 2 blocks the call instead of letting it through.
+- **`killOnTimeout`:** a command that outlives `commandTimeoutMs` is killed with its whole process group (`SIGTERM`,
+  then `SIGKILL` after 2 s). On V1 this runs commands through `node:child_process` instead of Bun's `$`, which cannot
+  kill.
+- **`trust: "approved"` and `approvalsFile`:** commands from a hooks file inside the project directory run only once
+  approved; approvals are fingerprints of hooks file, event, matcher and command, kept in
+  `~/.config/opencode-hooks/approved.json` (mode 0600). Hooks files outside the project are trusted as before.
+- **`opencode-hooks-plugin status|approve` CLI** (`npx @raultov/opencode-hooks-plugin approve`) to review and approve a
+  project's commands.
+- Hooks the plugin will not run (unbridged events, non-`command` entries) are named once at `info` level on load.
+
+### Changed
+
+- The log line of a command that outlived its budget says whether it was killed or left running.
+
+### Fixed
+
+- The README said a `SessionStart` group with no matcher always runs; it runs only while `matchers` includes `""`
+  (as the defaults do). The README and the package description no longer say opencode has no hooks: it has its own,
+  it does not read Claude Code's.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added

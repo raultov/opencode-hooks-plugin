@@ -1,7 +1,7 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
   "version": "0.6.0",
-  "description": "Bridges Claude Code SessionStart, PreToolUse and PostToolUse hooks to opencode, which has no hooks of its own",
+  "description": "Runs Claude Code SessionStart, PreToolUse and PostToolUse hooks in opencode, which does not read Claude Code's hooks files",
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -24,6 +24,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "opencode-hooks-plugin": "dist/bin.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

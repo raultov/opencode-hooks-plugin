@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { patchFiles, toClaudeToolCalls } from "../src/tools.js";
+import { patchFiles, toClaudeToolCalls, toOpencodeArgs } from "../src/tools.js";
 
 const DIR = "/repo";
 
@@ -119,5 +119,65 @@ describe("patchFiles", () => {
 
   test("keeps a file the patch deletes, then adds again", () => {
     expect(patchFiles("*** Delete File: a\n*** Add File: a\n+x")).toEqual(["a"]);
+  });
+});
+
+describe("toOpencodeArgs", () => {
+  /** Translates a call, then maps a hook's updatedInput back onto it. */
+  const roundTrip = (tool: string, args: Record<string, unknown>, update: (input: Record<string, unknown>) => void) => {
+    const [call] = toClaudeToolCalls(tool, args, DIR);
+    if (call === undefined) throw new Error("no call");
+    const updatedInput = { ...call.tool_input };
+    update(updatedInput);
+    return toOpencodeArgs(tool, args, call, updatedInput);
+  };
+
+  test("returns only the fields the hook changed, under V1's names", () => {
+    const changes = roundTrip("edit", { filePath: "a.ts", oldString: "x", newString: "y" }, (input) => {
+      input.new_string = "z";
+    });
+    expect(changes).toEqual({ args: { newString: "z" }, ignored: [] });
+  });
+
+  test("writes a new file_path back to V2's path argument", () => {
+    const changes = roundTrip("write", { path: "a.ts", content: "x" }, (input) => {
+      input.file_path = "/repo/b.ts";
+    });
+    expect(changes).toEqual({ args: { path: "/repo/b.ts" }, ignored: [] });
+  });
+
+  test("maps run_in_background back to V2's background", () => {
+    const changes = roundTrip("shell", { command: "ls" }, (input) => {
+      input.run_in_background = true;
+    });
+    expect(changes).toEqual({ args: { background: true }, ignored: [] });
+  });
+
+  test("strips the workdir cd the hook kept, so the call does not cd twice", () => {
+    const changes = roundTrip("bash", { command: "rm x", workdir: "/other" }, (input) => {
+      input.command = `${String(input.command)} -i`;
+    });
+    expect(changes).toEqual({ args: { command: "rm x -i" }, ignored: [] });
+  });
+
+  test("keeps a command the hook rewrote without the workdir cd as it is", () => {
+    const changes = roundTrip("bash", { command: "rm x", workdir: "/other" }, (input) => {
+      input.command = "echo safe";
+    });
+    expect(changes).toEqual({ args: { command: "echo safe" }, ignored: [] });
+  });
+
+  test("reports fields with no opencode argument", () => {
+    const changes = roundTrip("bash", { command: "ls" }, (input) => {
+      input.sandbox = true;
+    });
+    expect(changes).toEqual({ args: {}, ignored: ["sandbox"] });
+  });
+
+  test("has nothing to write back to a patch", () => {
+    const patchText = "*** Begin Patch\n*** Add File: a.ts\n+x\n*** End Patch";
+    const [call] = toClaudeToolCalls("apply_patch", { patchText }, DIR);
+    if (call === undefined) throw new Error("no call");
+    expect(toOpencodeArgs("apply_patch", { patchText }, call, { file_path: "/repo/b.ts" })).toBeUndefined();
   });
 });

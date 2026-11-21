@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseControl } from "../src/control.js";
+import { parseControl, parseToolDecision } from "../src/control.js";
 
 describe("parseControl", () => {
   test("returns no message and no halt for empty stdout", () => {
@@ -45,5 +45,73 @@ describe("parseControl", () => {
 
   test("ignores a non-string systemMessage", () => {
     expect(parseControl('{ "systemMessage": 42 }').systemMessage).toBeUndefined();
+  });
+});
+
+describe("parseToolDecision", () => {
+  test("decides nothing for empty or plain output", () => {
+    expect(parseToolDecision("")).toEqual({});
+    expect(parseToolDecision("[guard] checked\n")).toEqual({});
+  });
+
+  test("reads a deny with its reason from hookSpecificOutput", () => {
+    const stdout = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "rm -rf is not allowed",
+      },
+    });
+    expect(parseToolDecision(stdout)).toEqual({ decision: "deny", reason: "rm -rf is not allowed" });
+  });
+
+  test("accepts a pretty-printed document, as Claude Code parses the whole of stdout", () => {
+    const stdout = JSON.stringify({ hookSpecificOutput: { permissionDecision: "deny" } }, null, 2);
+    expect(parseToolDecision(stdout).decision).toBe("deny");
+  });
+
+  test("finds a one-line directive among log lines", () => {
+    const stdout = `[guard] start\n${JSON.stringify({ hookSpecificOutput: { permissionDecision: "allow" } })}\n[guard] end`;
+    expect(parseToolDecision(stdout).decision).toBe("allow");
+  });
+
+  test("keeps the most restrictive decision across directives", () => {
+    const stdout = [
+      JSON.stringify({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "first" } }),
+      JSON.stringify({ hookSpecificOutput: { permissionDecision: "allow", permissionDecisionReason: "second" } }),
+    ].join("\n");
+    expect(parseToolDecision(stdout)).toEqual({ decision: "deny", reason: "first" });
+  });
+
+  test("reads the deprecated decision and reason, which hookSpecificOutput overrides", () => {
+    expect(parseToolDecision(JSON.stringify({ decision: "block", reason: "legacy" }))).toEqual({
+      decision: "deny",
+      reason: "legacy",
+    });
+    expect(parseToolDecision(JSON.stringify({ decision: "approve" })).decision).toBe("allow");
+    const both = JSON.stringify({ decision: "block", hookSpecificOutput: { permissionDecision: "allow" } });
+    expect(parseToolDecision(both).decision).toBe("allow");
+  });
+
+  test("reads continue:false as a deny carrying its stopReason", () => {
+    expect(parseToolDecision(JSON.stringify({ continue: false, stopReason: "stop here" }))).toEqual({
+      decision: "deny",
+      reason: "stop here",
+    });
+  });
+
+  test("returns updatedInput and every additionalContext", () => {
+    const stdout = [
+      JSON.stringify({ hookSpecificOutput: { updatedInput: { command: "ls -la" }, additionalContext: "one" } }),
+      JSON.stringify({ hookSpecificOutput: { additionalContext: "two" } }),
+    ].join("\n");
+    expect(parseToolDecision(stdout)).toEqual({ updatedInput: { command: "ls -la" }, additionalContext: "one\ntwo" });
+  });
+
+  test("ignores fields of the wrong type", () => {
+    const stdout = JSON.stringify({
+      hookSpecificOutput: { permissionDecision: "nope", updatedInput: "ls", additionalContext: 3 },
+    });
+    expect(parseToolDecision(stdout)).toEqual({});
   });
 });

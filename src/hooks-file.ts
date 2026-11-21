@@ -26,7 +26,12 @@ export type HooksFile = {
 export type ResolvedCommand = {
   command: string;
   description?: string;
+  /** Its group's matcher, `""` when the group has none. */
+  matcher?: string;
 };
+
+/** The Claude Code events this plugin runs. */
+export const BRIDGED_EVENTS = ["SessionStart", "PreToolUse", "PostToolUse"] as const;
 
 /**
  * The literal token Claude Code expands to a plugin's install directory.
@@ -38,7 +43,11 @@ export const PLUGIN_ROOT_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
 /** Relative locations probed when no explicit hooks file is configured. */
 export const DEFAULT_HOOKS_FILES = ["hooks/hooks.json", ".claude/settings.json"] as const;
 
-/** SessionStart matchers honoured by default. An entry with no matcher always runs. */
+/**
+ * SessionStart matchers honoured by default. A group with no matcher counts as
+ * `""`, so it runs with these defaults, but not with a `matchers` list that
+ * leaves `""` out.
+ */
 export const DEFAULT_MATCHERS = ["startup", "resume", ""] as const;
 
 /**
@@ -140,11 +149,72 @@ export function resolveCommands(
   // is checked on its own. Its toolkit hooks files ship such groups.
   return (file.hooks?.[event] ?? [])
     .filter((group) => (group.matcher ?? "").split("|").some((value) => allowed.has(value)))
-    .flatMap((group) => group.hooks ?? [])
-    .flatMap((entry) => {
+    .flatMap((group) => (group.hooks ?? []).map((entry) => ({ entry, matcher: group.matcher ?? "" })))
+    .flatMap(({ entry, matcher }) => {
       if (entry.type !== "command" || typeof entry.command !== "string") return [];
       const command = entry.command.replaceAll(PLUGIN_ROOT_PLACEHOLDER, root);
       if (needles.some((needle) => command.includes(needle))) return [];
-      return [{ command, description: entry.description }];
+      return [{ command, description: entry.description, matcher }];
     });
+}
+
+/** One entry of a bridged event, as `listCommands` reports it. */
+export type ListedCommand = {
+  event: (typeof BRIDGED_EVENTS)[number];
+  matcher: string;
+  command: string;
+  description?: string;
+};
+
+/**
+ * Every `type: "command"` entry of the bridged events, placeholder expanded,
+ * whatever its matcher: what `trust: "approved"` may be asked to run.
+ */
+export function listCommands(file: HooksFile, root: string): ListedCommand[] {
+  return BRIDGED_EVENTS.flatMap((event) =>
+    (file.hooks?.[event] ?? []).flatMap((group) =>
+      (group.hooks ?? []).flatMap((entry) =>
+        entry.type === "command" && typeof entry.command === "string"
+          ? [
+              {
+                event,
+                matcher: group.matcher ?? "",
+                command: entry.command.replaceAll(PLUGIN_ROOT_PLACEHOLDER, root),
+                description: entry.description,
+              },
+            ]
+          : [],
+      ),
+    ),
+  );
+}
+
+/**
+ * What the hooks file declares that this plugin does not run, counted, e.g.
+ * `["Stop: 2", "PreToolUse type prompt: 1"]`: events it does not bridge, and
+ * entries of a bridged event that are not a `command` with a command line.
+ * Tolerates a file whose shape is off, since it only feeds a log line.
+ */
+export function unsupportedHooks(file: HooksFile): string[] {
+  const counts = new Map<string, number>();
+  const count = (key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+  const bridged: readonly string[] = BRIDGED_EVENTS;
+
+  for (const [event, groups] of Object.entries(file.hooks ?? {})) {
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      const entries = group?.hooks;
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!bridged.includes(event)) {
+          count(event);
+        } else if (entry?.type !== "command") {
+          count(`${event} type ${String(entry?.type ?? "missing")}`);
+        } else if (typeof entry.command !== "string") {
+          count(`${event} command missing`);
+        }
+      }
+    }
+  }
+  return [...counts].map(([key, n]) => `${key}: ${n}`);
 }

@@ -2,10 +2,20 @@ import type { PluginModule as V1PluginModule } from "@opencode-ai/plugin";
 import { HooksPlugin } from "./v1.js";
 import { type createHooksPluginV2, HooksPluginV2 } from "./v2.js";
 
-export type { Bridge, CommandResult, Exec, HooksPluginOptions, Log, LogLevel } from "./bridge.js";
-export type { Control, Directive } from "./control.js";
+export type {
+  Bridge,
+  CommandResult,
+  Exec,
+  HooksPluginOptions,
+  Log,
+  LogLevel,
+  PreToolOutcome,
+  ToolCallInput,
+} from "./bridge.js";
+export type { Control, Directive, ToolDecision } from "./control.js";
 export type { HookEntry, HooksFile, MatcherGroup, ResolvedCommand, ToolCommand } from "./hooks-file.js";
-export type { ClaudeToolCall } from "./tools.js";
+export type { ArgumentChanges, ClaudeToolCall } from "./tools.js";
+export type { TrustMode } from "./trust.js";
 export { HooksPlugin } from "./v1.js";
 export type { HooksPluginV2Dependencies } from "./v2.js";
 export { createHooksPluginV2, HooksPluginV2 } from "./v2.js";

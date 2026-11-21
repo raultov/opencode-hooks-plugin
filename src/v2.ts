@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
 // Deep path on purpose: it resolves to the tiny `define` helper alone, while
 // the package root re-exports the whole SDK barrel and would drag it into the
 // bundle. Same `Plugin.define` the plugin guide shows.
 import { define, type Plugin } from "@opencode/plugin/promise/plugin";
+import type { Result } from "@opencode/plugin/promise/tool";
 import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./bridge.js";
+import { spawnExec } from "./exec.js";
 
 /**
  * Bridges Claude Code `SessionStart` hooks to opencode V2.
@@ -28,38 +29,41 @@ import { createBridge, type Exec, type HooksPluginOptions, type Log } from "./br
 const CONTEXT_KINDS = ["context", "compaction", "generate", "title"] as const;
 
 /**
- * `node:child_process` execution: `sh -c` with the event payload on stdin,
- * closed straight after, so a hook that reads stdin sees EOF instead of
- * hanging the chain.
- *
- * stdout and stderr are drained as they arrive, so a command abandoned after
- * its budget keeps running without blocking on a full pipe. Like V1, it is
- * never killed.
+ * `node:child_process` execution, shared with V1's `killOnTimeout`: see
+ * `spawnExec`. Never killed unless `killOnTimeout` passes it a signal.
  */
-export const nodeExec: Exec = (command, { cwd, env, stdin }) =>
-  new Promise((resolve) => {
-    const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    // A hook that exits without reading its stdin closes the pipe under us.
-    // That is its right, not a failure of the command.
-    child.stdin.on("error", () => undefined);
-    child.stdin.end(stdin ?? "");
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    // A spawn failure resolves rather than rejects: the bridge reports it like
-    // any other failed command and moves on.
-    child.on("error", (error) => {
-      resolve({ stdout, stderr: `${stderr}\n${String(error)}`.trim(), exitCode: 127 });
-    });
-    child.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
-  });
+export const nodeExec: Exec = spawnExec;
+
+/**
+ * Whether the host fails a call when an `execute.before` hook rejects.
+ *
+ * Up to 2.0.28, opencode V2's promise adapter turned a rejected hook into a
+ * defect rather than a failure of that one call; from 2.0.29 it fails the
+ * call alone, with the rejection's message (checked in the published
+ * `@opencode/plugin` adapters, which share opencode's version number). A
+ * version that does not read as one (a dev or local build, `0.0.0-…`) is
+ * taken to be current.
+ */
+export function canFailToolCalls(version: string | undefined): boolean {
+  const match = version?.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return true;
+  const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (major === 0) return true;
+  if (major !== 2) return major > 2;
+  return minor > 0 || patch >= 29;
+}
+
+/**
+ * The call's result with `PreToolUse` context added for the model: appended to
+ * text content, or as one more text part. A result with no content is
+ * returned as it was, since there is nothing the model reads to add to.
+ */
+export function withContext(result: Result, context: string): Result {
+  const text = `[PreToolUse hook context]\n${context}`;
+  if (typeof result.content === "string") return { ...result, content: `${result.content}\n\n${text}` };
+  if (Array.isArray(result.content)) return { ...result, content: [...result.content, { type: "text", text }] };
+  return result;
+}
 
 /**
  * Console transport. V2's plugin context exposes no log call (its `app` is
@@ -95,19 +99,51 @@ export function createHooksPluginV2(dependencies: HooksPluginV2Dependencies = {}
         log,
       });
 
+      // The test doubles carry no `app`; a real host always does.
+      const version: string | undefined = ctx.app?.version;
+      const canBlock = canFailToolCalls(version);
+      if (bridge.decides && !canBlock) {
+        await Promise.resolve(
+          log(
+            "warn",
+            `preToolDecisions: opencode ${version} cannot fail a call from a plugin hook (2.0.29 or newer can) — denials are logged, the calls go ahead`,
+          ),
+        ).catch(() => undefined);
+      }
+
       if (bridge.hasPreToolCommands) {
         // Awaited before the call runs, so a hook sees the tree as the tool
-        // found it.
+        // found it. With `preToolDecisions`, a rejection is how a V2 plugin
+        // refuses a call: opencode fails it with the message.
         await ctx.tool.hook("execute.before", async (event) => {
-          await bridge.beforeTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
+          const outcome = await bridge.beforeTool({
+            tool: event.tool,
+            args: event.input,
+            sessionID: event.sessionID,
+            callID: event.id,
+          });
+          if (outcome.block !== undefined) {
+            if (canBlock) throw new Error(outcome.block);
+            return;
+          }
+          if (outcome.args !== undefined) {
+            const input = typeof event.input === "object" && event.input !== null ? event.input : {};
+            event.input = { ...input, ...outcome.args };
+          }
         });
       }
 
-      if (bridge.hasToolCommands) {
+      if (bridge.hasToolCommands || bridge.decides) {
         // Only a completed call: Claude Code's PostToolUse does not fire for a
         // tool that failed either.
         await ctx.tool.hook("execute.after", async (event) => {
-          if (event.status !== "completed") return;
+          if (event.status !== "completed") {
+            bridge.takeContext(event.id);
+            return;
+          }
+          const context = bridge.takeContext(event.id);
+          if (context !== undefined) event.result = withContext(event.result, context);
+          if (!bridge.hasToolCommands) return;
           await bridge.afterTool({ tool: event.tool, args: event.input, sessionID: event.sessionID });
         });
       }

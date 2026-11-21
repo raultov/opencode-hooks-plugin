@@ -6,11 +6,13 @@ import {
   DEFAULT_MATCHERS,
   type HooksFile,
   hooksFileCandidates,
+  listCommands,
   matchesTool,
   PLUGIN_ROOT_PLACEHOLDER as PH,
   readHooksFile,
   resolveCommands,
   resolveToolCommands,
+  unsupportedHooks,
 } from "../src/hooks-file.js";
 
 const ROOT = "/opt/toolkit";
@@ -188,5 +190,65 @@ describe("resolveToolCommands", () => {
       { command: `"${ROOT}/a.sh"`, description: undefined, matcher: "Bash" },
       { command: `"${ROOT}/b.sh"`, description: undefined, matcher: "" },
     ]);
+  });
+});
+
+describe("resolveCommands matcher", () => {
+  test("keeps each command's group matcher, blank when the group has none", () => {
+    expect(resolveCommands(fixture, "SessionStart", ROOT, DEFAULT_MATCHERS, []).map((entry) => entry.matcher)).toEqual([
+      "startup",
+      "startup",
+      "",
+    ]);
+  });
+});
+
+describe("listCommands", () => {
+  test("lists every command entry of the bridged events, whatever its matcher", () => {
+    expect(listCommands(fixture, ROOT)).toEqual([
+      { event: "SessionStart", matcher: "startup", command: `"${ROOT}/hooks/memory.sh"`, description: "memory" },
+      {
+        event: "SessionStart",
+        matcher: "startup",
+        command: `"${ROOT}/hooks/deps.sh" "${ROOT}"`,
+        description: undefined,
+      },
+      { event: "SessionStart", matcher: "clear", command: "should-not-run", description: undefined },
+      { event: "SessionStart", matcher: "", command: "no-matcher-runs", description: undefined },
+      { event: "PreToolUse", matcher: "", command: "other-event", description: undefined },
+    ]);
+  });
+});
+
+describe("unsupportedHooks", () => {
+  test("counts unbridged events and entries that are not commands", () => {
+    const file: HooksFile = {
+      hooks: {
+        ...fixture.hooks,
+        Stop: [
+          {
+            hooks: [
+              { type: "command", command: "a" },
+              { type: "command", command: "b" },
+            ],
+          },
+        ],
+      },
+    };
+    expect(unsupportedHooks(file)).toEqual([
+      "SessionStart type prompt: 1",
+      "SessionStart command missing: 1",
+      "Stop: 2",
+    ]);
+  });
+
+  test("reports nothing for a file every hook of which is bridged", () => {
+    expect(unsupportedHooks({ hooks: { PostToolUse: [{ hooks: [{ type: "command", command: "x" }] }] } })).toEqual([]);
+  });
+
+  test("tolerates a file whose shape is off", () => {
+    // Parsed, as the plugin gets it: the file on disk is not checked against the type.
+    const malformed: HooksFile = JSON.parse('{ "hooks": { "Stop": "nope", "PreToolUse": [null, { "hooks": 3 }] } }');
+    expect(unsupportedHooks(malformed)).toEqual([]);
   });
 });

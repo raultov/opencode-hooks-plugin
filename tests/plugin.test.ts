@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLUGIN_ROOT_PLACEHOLDER as PH } from "../src/hooks-file.js";
 import { HooksPlugin, type HooksPluginOptions } from "../src/index.js";
+import { addApprovals } from "../src/trust.js";
 
 type Recorded = { command: string; env: Record<string, string>; stdin?: string };
 
@@ -518,5 +519,201 @@ describe("HooksPlugin PreToolUse", () => {
     await hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "ses_1", callID: "call_1" }, output);
     expect(output.args).toEqual({ command: "ls" });
     expect(logs.some((entry) => entry.level === "warn" && String(entry.message).includes("exited 2"))).toBe(true);
+  });
+});
+
+describe("HooksPlugin PreToolUse decisions (preToolDecisions)", () => {
+  const guard = {
+    hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `"${PH}/guard.sh"` }] }],
+    },
+  };
+  const decisions = { preToolDecisions: true };
+  const deny = (reason: string) =>
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+    });
+
+  /** Drives `tool.execute.before` and returns the output whose args a hook may rewrite. */
+  async function before(hooks: Awaited<ReturnType<typeof load>>["hooks"], args: Record<string, unknown>) {
+    const output = { args };
+    await hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "ses_1", callID: "call_1" }, output);
+    return output;
+  }
+
+  test("exit 2 blocks the call, with stderr as the reason", async () => {
+    const { hooks } = await load(await hooksDir(guard), decisions, () => ({ exitCode: 2, stderr: "no rm here\n" }));
+    await expect(before(hooks, { command: "rm -rf x" })).rejects.toThrow(
+      "Blocked by PreToolUse hook guard.sh: no rm here",
+    );
+  });
+
+  test("a deny blocks the call, with its reason", async () => {
+    const { hooks, logs } = await load(await hooksDir(guard), decisions, () => ({ stdout: deny("use trash instead") }));
+    await expect(before(hooks, { command: "rm x" })).rejects.toThrow(
+      "Blocked by PreToolUse hook guard.sh: use trash instead",
+    );
+    expect(logs.some((entry) => entry.level === "warn" && String(entry.message).includes("denied Bash"))).toBe(true);
+  });
+
+  test("a deny does nothing without preToolDecisions, as before", async () => {
+    const { hooks } = await load(await hooksDir(guard), {}, () => ({ stdout: deny("nope") }));
+    expect((await before(hooks, { command: "rm x" })).args).toEqual({ command: "rm x" });
+  });
+
+  test("ask lets the call go ahead and says why", async () => {
+    const ask = JSON.stringify({ hookSpecificOutput: { permissionDecision: "ask" } });
+    const { hooks, logs } = await load(await hooksDir(guard), decisions, () => ({ stdout: ask }));
+    expect((await before(hooks, { command: "ls" })).args).toEqual({ command: "ls" });
+    expect(logs.some((entry) => String(entry.message).includes("asked for confirmation"))).toBe(true);
+  });
+
+  test("updatedInput rewrites the arguments in place", async () => {
+    const update = JSON.stringify({ hookSpecificOutput: { updatedInput: { command: "cd '/other' && ls -la" } } });
+    const { hooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: update }));
+    const output = await before(hooks, { command: "ls", workdir: "/other" });
+    expect(output.args).toEqual({ command: "ls -la", workdir: "/other" });
+  });
+
+  test("additionalContext is added to the call's result", async () => {
+    const note = JSON.stringify({ hookSpecificOutput: { additionalContext: "this repo uses pnpm" } });
+    const { hooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: note }));
+    expect(hooks["tool.execute.after"]).toBeDefined();
+    await before(hooks, { command: "npm i" });
+    const result = { title: "", output: "installed", metadata: {} };
+    await hooks["tool.execute.after"]?.({ tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} }, result);
+    expect(result.output).toBe("installed\n\n[PreToolUse hook context]\nthis repo uses pnpm");
+    const again = { title: "", output: "again", metadata: {} };
+    await hooks["tool.execute.after"]?.({ tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} }, again);
+    expect(again.output).toBe("again");
+  });
+
+  test("a hook that fails lets the call go ahead, unless failClosed", async () => {
+    const failing = () => ({ exitCode: 1, stderr: "broken" });
+    const open = await load(await hooksDir(guard), decisions, failing);
+    expect((await before(open.hooks, { command: "ls" })).args).toEqual({ command: "ls" });
+    const closed = await load(await hooksDir(guard), { ...decisions, failClosed: true }, failing);
+    await expect(before(closed.hooks, { command: "ls" })).rejects.toThrow("the hook exited 1");
+  });
+
+  test("failClosed blocks a call whose hook never answers", async () => {
+    const { hooks } = await load(
+      await hooksDir(guard),
+      { ...decisions, failClosed: true, commandTimeoutMs: 20 },
+      () => ({
+        hang: true,
+      }),
+    );
+    await expect(before(hooks, { command: "ls" })).rejects.toThrow("did not answer within 20ms");
+  });
+
+  test("warns that failClosed needs preToolDecisions", async () => {
+    const { logs } = await load(await hooksDir(guard), { failClosed: true });
+    expect(logs.some((entry) => String(entry.message).includes("failClosed has no effect"))).toBe(true);
+  });
+});
+
+describe("HooksPlugin killOnTimeout", () => {
+  test("runs commands through node:child_process instead of Bun's shell", async () => {
+    const root = await hooksDir({
+      hooks: {
+        SessionStart: [
+          { matcher: "startup", hooks: [{ type: "command", command: `echo '{"systemMessage":"from sh"}'` }] },
+        ],
+      },
+    });
+    const { hooks, shellLines } = await load(root, { killOnTimeout: true });
+    expect(await transform(hooks)).toEqual(["## SessionStart hooks\nfrom sh"]);
+    expect(shellLines).toEqual([]);
+  });
+
+  test("kills a command that outlives its budget", async () => {
+    const root = await hooksDir({
+      hooks: { SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "sleep 30" }] }] },
+    });
+    const { hooks, logs } = await load(root, { killOnTimeout: true, commandTimeoutMs: 50 });
+    await transform(hooks);
+    expect(logs.some((entry) => String(entry.message).includes("50ms budget — killed"))).toBe(true);
+  });
+});
+
+describe("HooksPlugin trust", () => {
+  async function approvals(): Promise<string> {
+    return join(await mkdtemp(join(tmpdir(), "plugin-approvals-")), "approved.json");
+  }
+
+  test("skips the project's unapproved commands and says how to approve them", async () => {
+    const root = await hooksDir(twoCommands);
+    const { hooks, executed, logs } = await load(root, { trust: "approved", approvalsFile: await approvals() });
+    await transform(hooks);
+    expect(executed).toHaveLength(0);
+    const warning = logs.find((entry) => String(entry.message).includes("not approved"));
+    expect(String(warning?.message)).toContain(`approve --hooks-file '${join(root, "hooks", "hooks.json")}'`);
+  });
+
+  test("runs the commands that were approved", async () => {
+    const root = await hooksDir(twoCommands);
+    const approvalsFile = await approvals();
+    const hooksFile = join(root, "hooks", "hooks.json");
+    await addApprovals(approvalsFile, [
+      { hooksFile, event: "SessionStart", matcher: "startup", command: `"${root}/a.sh"` },
+    ]);
+    const { hooks, executed } = await load(root, { trust: "approved", approvalsFile });
+    await transform(hooks);
+    expect(executed.map((entry) => entry.command)).toEqual([`"${root}/a.sh"`]);
+  });
+
+  test("trusts a hooks file outside the project directory", async () => {
+    const pluginRoot = await hooksDir(twoCommands);
+    const projectDir = await mkdtemp(join(tmpdir(), "plugin-project-"));
+    // `load` makes its first argument the project directory; `root` points elsewhere.
+    const { hooks, executed } = await load(projectDir, {
+      root: pluginRoot,
+      trust: "approved",
+      approvalsFile: await approvals(),
+    });
+    await transform(hooks);
+    expect(executed).toHaveLength(2);
+  });
+
+  test("reads an unknown trust value as approved", async () => {
+    const root = await hooksDir(twoCommands);
+    // Parsed, as a hand-written config reaches the plugin: the value is outside the type.
+    const options: HooksPluginOptions = JSON.parse(
+      `{ "trust": "yes", "approvalsFile": ${JSON.stringify(await approvals())} }`,
+    );
+    const { hooks, executed, logs } = await load(root, options);
+    await transform(hooks);
+    expect(executed).toHaveLength(0);
+    expect(logs.some((entry) => String(entry.message).includes('unknown trust "yes"'))).toBe(true);
+  });
+
+  test("approves nothing when the approvals file is not JSON", async () => {
+    const root = await hooksDir(twoCommands);
+    const approvalsFile = await approvals();
+    await writeFile(approvalsFile, "{ nope");
+    const { hooks, executed, logs } = await load(root, { trust: "approved", approvalsFile });
+    await transform(hooks);
+    expect(executed).toHaveLength(0);
+    expect(logs.some((entry) => String(entry.message).includes("approvals file is not valid JSON"))).toBe(true);
+  });
+
+  test("runs everything by default, as before", async () => {
+    const { hooks, executed } = await load(await hooksDir(twoCommands));
+    await transform(hooks);
+    expect(executed).toHaveLength(2);
+  });
+});
+
+describe("HooksPlugin unsupported hooks", () => {
+  test("says once which hooks it will not run", async () => {
+    const root = await hooksDir({
+      hooks: { ...twoCommands.hooks, Stop: [{ hooks: [{ type: "command", command: "x" }] }] },
+    });
+    const { logs } = await load(root);
+    const notice = logs.filter((entry) => String(entry.message).startsWith("not bridged"));
+    expect(notice).toHaveLength(1);
+    expect(notice[0]?.level).toBe("info");
+    expect(String(notice[0]?.message)).toContain("Stop: 1");
   });
 });

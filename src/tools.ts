@@ -143,3 +143,81 @@ export function toClaudeToolCalls(tool: string, args: unknown, directory: string
       return [];
   }
 }
+
+/** Which opencode argument each Claude Code `tool_input` field came from, per tool. */
+function argumentNames(tool: string, input: Record<string, unknown>): Record<string, string> | undefined {
+  // V1 names the file `filePath`, V2 `path`: write back to the one the call used.
+  const fileKey = input.filePath !== undefined ? "filePath" : "path";
+  switch (tool) {
+    case "write":
+      return { file_path: fileKey, content: "content" };
+    case "edit":
+      return { file_path: fileKey, old_string: "oldString", new_string: "newString", replace_all: "replaceAll" };
+    case "bash":
+      return { command: "command", description: "description", timeout: "timeout" };
+    case "shell":
+      return { command: "command", description: "description", timeout: "timeout", run_in_background: "background" };
+    default:
+      return undefined;
+  }
+}
+
+/** What `toOpencodeArgs` makes of an `updatedInput`. */
+export type ArgumentChanges = {
+  /** opencode arguments to overwrite, only those whose value changed. */
+  args: Record<string, unknown>;
+  /** `updatedInput` fields with no opencode argument to carry them. */
+  ignored: string[];
+};
+
+/**
+ * Maps a `PreToolUse` hook's `updatedInput` back onto the opencode arguments
+ * of the call `toClaudeToolCalls` translated, the reverse of that mapping.
+ *
+ * Only the fields whose value differs from what the hook was sent are
+ * returned, so a hook that echoes its whole `tool_input` back with one field
+ * changed rewrites that field alone. A field the hook dropped is left as it
+ * was: an argument cannot be safely removed on the hook's behalf.
+ *
+ * A shell call whose `workdir` reached the hook as a `cd` prefix keeps that
+ * `workdir`; the prefix is stripped back off the new command when the hook
+ * kept it, so the call does not `cd` twice.
+ *
+ * Returns undefined for a call that has no single opencode counterpart: a
+ * patch reaches hooks as one `Edit` per file, and an edit to one of them
+ * cannot be written back into the patch text.
+ */
+export function toOpencodeArgs(
+  tool: string,
+  args: unknown,
+  call: ClaudeToolCall,
+  updatedInput: Record<string, unknown>,
+): ArgumentChanges | undefined {
+  const input = asRecord(args);
+  const names = argumentNames(tool, input);
+  if (names === undefined) return undefined;
+
+  const changes: ArgumentChanges = { args: {}, ignored: [] };
+  for (const [field, value] of Object.entries(updatedInput)) {
+    const name = names[field];
+    if (name === undefined) {
+      changes.ignored.push(field);
+      continue;
+    }
+    if (JSON.stringify(value) === JSON.stringify(call.tool_input[field])) continue;
+    changes.args[name] =
+      field === "command" ? withoutWorkdirPrefix(value, call.tool_input.command, input.command) : value;
+  }
+  return changes;
+}
+
+/**
+ * Removes the `cd '<workdir>' && ` that `inWorkdir` put in front of the
+ * original command, when the hook's new command still starts with it.
+ */
+function withoutWorkdirPrefix(updated: unknown, sent: unknown, original: unknown): unknown {
+  if (typeof updated !== "string" || typeof sent !== "string" || typeof original !== "string") return updated;
+  if (sent === original || !sent.endsWith(original)) return updated;
+  const prefix = sent.slice(0, sent.length - original.length);
+  return updated.startsWith(prefix) ? updated.slice(prefix.length) : updated;
+}

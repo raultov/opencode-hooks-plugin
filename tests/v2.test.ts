@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResult, Exec } from "../src/bridge.js";
 import { PLUGIN_ROOT_PLACEHOLDER as PH } from "../src/hooks-file.js";
-import { createHooksPluginV2, type HooksPluginV2Dependencies } from "../src/v2.js";
+import { canFailToolCalls, createHooksPluginV2, type HooksPluginV2Dependencies, withContext } from "../src/v2.js";
 
 type Recorded = { command: string; env: Record<string, string>; stdin?: string };
 type ToolHandler = (event: Record<string, unknown>) => Promise<void> | void;
@@ -16,6 +16,7 @@ function harness(
   replies: (command: string) => Partial<CommandResult> & { hang?: boolean } = () => ({}),
   options: Record<string, unknown> = {},
   dependencies: Omit<HooksPluginV2Dependencies, "exec"> = {},
+  app?: { name: string; version: string; channel: string },
 ) {
   const executed: Recorded[] = [];
   const logs: Array<Record<string, unknown>> = [];
@@ -38,6 +39,7 @@ function harness(
   };
 
   const ctx = {
+    ...(app === undefined ? {} : { app }),
     options,
     location: { directory: root },
     session: {
@@ -79,8 +81,13 @@ const twoCommands = {
 };
 
 /** Loads the plugin against a fake context and returns the harness spies. */
-async function load(root: string, options: Record<string, unknown> = {}, replies?: Parameters<typeof harness>[1]) {
-  const spies = harness(root, replies, options);
+async function load(
+  root: string,
+  options: Record<string, unknown> = {},
+  replies?: Parameters<typeof harness>[1],
+  app?: Parameters<typeof harness>[4],
+) {
+  const spies = harness(root, replies, options, {}, app);
   const plugin = createHooksPluginV2(spies.dependencies);
   // biome-ignore lint/suspicious/noExplicitAny: the fake context is narrower than the SDK's.
   await plugin.setup(spies.ctx as any);
@@ -333,5 +340,108 @@ describe("HooksPluginV2 PreToolUse", () => {
     const { toolHooks, executed } = await load(await hooksDir(photographer));
     await toolHooks.get("execute.before")?.({ tool: "write", sessionID: "s", input: { path: "/a", content: "" } });
     expect(executed).toHaveLength(0);
+  });
+});
+
+describe("HooksPluginV2 PreToolUse decisions (preToolDecisions)", () => {
+  const guard = {
+    hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `"${PH}/guard.sh"` }] }],
+    },
+  };
+  const decisions = { preToolDecisions: true };
+  const deny = JSON.stringify({
+    hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "not here" },
+  });
+
+  const shellCall = (input: Record<string, unknown>) => ({ tool: "shell", sessionID: "ses_1", id: "call_1", input });
+
+  test("rejects a denied call, which fails it on opencode 2.0.29 and newer", async () => {
+    const app = { name: "opencode", version: "2.3.2", channel: "latest" };
+    const { toolHooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: deny }), app);
+    await expect(toolHooks.get("execute.before")?.(shellCall({ command: "rm x" }))).rejects.toThrow(
+      "Blocked by PreToolUse hook guard.sh: not here",
+    );
+  });
+
+  test("lets a denied call go ahead on an opencode too old to fail it, and says so", async () => {
+    const app = { name: "opencode", version: "2.0.26", channel: "latest" };
+    const { toolHooks, logs } = await load(await hooksDir(guard), decisions, () => ({ stdout: deny }), app);
+    expect(logs.some((entry) => String(entry.message).includes("opencode 2.0.26 cannot fail a call"))).toBe(true);
+    const event = shellCall({ command: "rm x" });
+    await toolHooks.get("execute.before")?.(event);
+    expect(event.input).toEqual({ command: "rm x" });
+  });
+
+  test("never rejects without preToolDecisions, as before", async () => {
+    const { toolHooks } = await load(await hooksDir(guard), {}, () => ({ exitCode: 2, stdout: deny }));
+    await toolHooks.get("execute.before")?.(shellCall({ command: "rm x" }));
+    expect(toolHooks.has("execute.after")).toBe(false);
+  });
+
+  test("replaces the input with the rewritten arguments", async () => {
+    const update = JSON.stringify({
+      hookSpecificOutput: { updatedInput: { command: "ls -la", run_in_background: true } },
+    });
+    const { toolHooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: update }));
+    const event = shellCall({ command: "ls" });
+    await toolHooks.get("execute.before")?.(event);
+    expect(event.input).toEqual({ command: "ls -la", background: true });
+  });
+
+  test("adds additionalContext to the completed call's result", async () => {
+    const note = JSON.stringify({ hookSpecificOutput: { additionalContext: "prefer pnpm" } });
+    const { toolHooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: note }));
+    await toolHooks.get("execute.before")?.(shellCall({ command: "npm i" }));
+    const after = { ...shellCall({ command: "npm i" }), status: "completed", result: { content: "done" } };
+    await toolHooks.get("execute.after")?.(after);
+    expect(after.result).toEqual({ content: "done\n\n[PreToolUse hook context]\nprefer pnpm" });
+  });
+
+  test("drops the context of a call that failed", async () => {
+    const note = JSON.stringify({ hookSpecificOutput: { additionalContext: "prefer pnpm" } });
+    const { toolHooks } = await load(await hooksDir(guard), decisions, () => ({ stdout: note }));
+    await toolHooks.get("execute.before")?.(shellCall({ command: "npm i" }));
+    await toolHooks.get("execute.after")?.({ ...shellCall({}), status: "error" });
+    const after = { ...shellCall({}), status: "completed", result: { content: "later" } };
+    await toolHooks.get("execute.after")?.(after);
+    expect(after.result).toEqual({ content: "later" });
+  });
+});
+
+describe("canFailToolCalls", () => {
+  test("is true from 2.0.29 on", () => {
+    expect(canFailToolCalls("2.0.29")).toBe(true);
+    expect(canFailToolCalls("2.1.0")).toBe(true);
+    expect(canFailToolCalls("2.3.2")).toBe(true);
+    expect(canFailToolCalls("3.0.0")).toBe(true);
+  });
+
+  test("is false before 2.0.29", () => {
+    expect(canFailToolCalls("2.0.28")).toBe(false);
+    expect(canFailToolCalls("2.0.26")).toBe(false);
+    expect(canFailToolCalls("1.19.5")).toBe(false);
+  });
+
+  test("takes dev, local and unknown builds to be current", () => {
+    expect(canFailToolCalls("0.0.0-dev-1330")).toBe(true);
+    expect(canFailToolCalls("local")).toBe(true);
+    expect(canFailToolCalls(undefined)).toBe(true);
+  });
+});
+
+describe("withContext", () => {
+  test("appends to text content, or adds a text part", () => {
+    expect(withContext({ content: "out" }, "note")).toEqual({ content: "out\n\n[PreToolUse hook context]\nnote" });
+    expect(withContext({ content: [{ type: "text", text: "out" }] }, "note")).toEqual({
+      content: [
+        { type: "text", text: "out" },
+        { type: "text", text: "[PreToolUse hook context]\nnote" },
+      ],
+    });
+  });
+
+  test("leaves a result with no content as it was", () => {
+    expect(withContext({ metadata: { a: 1 } }, "note")).toEqual({ metadata: { a: 1 } });
   });
 });
