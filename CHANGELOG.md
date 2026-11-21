@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-21
+
 Every option below is off by default: with none of them set, hooks run exactly as in 0.6.0.
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "@raultov/opencode-hooks-plugin",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Runs Claude Code SessionStart, PreToolUse and PostToolUse hooks in opencode, which does not read Claude Code's hooks files",
   "keywords": [
     "opencode",
